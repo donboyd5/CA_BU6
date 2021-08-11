@@ -185,6 +185,31 @@ dbGetInfo(db)
 sqlcmd <- "PRAGMA table_info(pus)" # get info about columns in a table
 dbGetQuery(db, sqlcmd)
 
+dbGetQuery(con, paste0("SELECT COUNT(*) FROM ", "pus")) # much faster than nrow
+
+getall <- tbl(db, sql(paste0("SELECT * FROM ", "pus")))
+glimpse(getall)
+count(getall, st)
+getall %>% summarise(pop=sum(pwgtp)) # 311,536,599 is target OLD target
+
+unionall <- function(vars, years, where) {
+  # do NOT include year in the input vector vars - it is a reserved word
+  # build a union all query in pieces
+  part1 <- paste0('SELECT "year", ', toString(vars))
+  part2 <- paste0(" FROM acs", years)
+  part3 <- paste0(" WHERE ", where)
+  queryvec <- paste0(part1, part2, part3)
+  unionallqry <- paste(queryvec, collapse=" UNION ALL ")
+  return(unionallqry)
+}
+
+vars <- c("serialno", "st", "pwgtp")
+rules <- "st=36"
+rules <- "st>=0"
+# rules <- "size_code=0 AND (agglvl_code<='28' OR (agglvl_code>='58' AND agglvl_code<='64')) " # 2 secs
+fullqry <- unionall(vars, c(2007:2014), rules)
+
+
 
 # set indexes ----
 dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
@@ -258,6 +283,41 @@ summary(mod)
 # 3 .Divorced
 # 4 .Separated
 # 5 .Never married or under 15 years old
+
+
+
+
+#****************************************************************************************************
+#                adjinc and inflation adjustment ####
+#****************************************************************************************************
+
+# see http://www.sdcbidc.iupui.edu/sharing/documents/PUMSInflationAdjustmentdocumentation.pdf
+
+# Note: The value of ADJINC inflation-adjusts reported income to 2013 dollars.
+# ADJINC applies to variables FINCP and HINCP in the housing record, and
+# variables INTP, OIP, PAP, PERNP, PINCP, RETP, SEMP, SSIP, SSP, and WAGP in
+# the person record. 
+
+# "..Data users will need to multiply the microdata by the ADJUST variable on the PUMS files for each
+# individual year..."
+
+# Adjusting Income for Inflation – ACS Income amounts are reported for the 12 months
+# preceding the interview month. Monthly Consumer Price Indices (CPIs) are used to inflationadjust
+# these components to a reference calendar year (January through December). For
+# example, a household interviewed in March 2006 reports their income for March 2005
+# through February 2006. Their income is inflation-adjusted to the 2006 reference calendar
+# year by multiplying their reported income by the 2006 average annual CPI (January-December 2006)
+# and then dividing by the average CPI for the March 2005-February 2006
+# income reference period. Since there are twelve different income reference periods
+# throughout the interview year, there are twelve different income inflation adjustments that
+# take place. To maintain respondent confidentiality, none of the twelve inflation-adjustment
+# factors are on the PUMS files. Instead, a variable, “ADJUST,” is on the file and is the
+# average of the twelve inflation adjustment factors.
+# In order to inflation adjust income amounts from previous years to the current reference
+# calendar year, dollar values on individual records are multiplied by the average annual CPIU-RS
+# for the current reference year then divided by the average annual CPI-U-RS for the
+# earlier income amount year. 
+
 
 
 
