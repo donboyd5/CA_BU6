@@ -1,0 +1,274 @@
+---
+title: "California Bargaining Unit 6 Compensation Analysis"
+author: "Don Boyd"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_notebook:
+    df_print: paged
+    fig_height: 6
+    fig_width: 8
+    toc: yes
+    toc_depth: 3
+    toc_float: true
+    number_sections: yes
+editor_options:
+  chunk_output_type: console
+---
+
+
+
+```{r runall, eval=FALSE, echo=FALSE} 
+# When we want a final report, run the following code selectively "by hand" (interactively)
+# -- NEVER using Knit with eval=TRUE
+# note <br> breaks line for html output but \n should break for pdf; also could try |
+
+rmdfn <- ".CA_report.rmd" # this file
+outfn <- paste0("report_", format(Sys.time(), "%Y-%m-%d"), ".html")
+rmarkdown::render(rmdfn, output_format="html_document", output_file=outfn)
+
+# library("RCurl")
+# ftpUpload(outfn, "ftp://kffrig:boyd4812@files.000webhost.com/public_html/KFF_RIG_MedicaidCuts_new.html")
+
+# Note may b safest to fully exit RStudio and restart it before running whole thing. Otherwise knitr may get confused
+# and include repetitive information in the output html file.
+
+```
+
+
+```{r setup, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(echo = FALSE, include=FALSE, eval=TRUE, message = FALSE, warning = FALSE)
+```
+
+
+```{r libraries}
+
+library(tidyverse)
+options(tibble.print_max = 80, tibble.print_min = 80) # if more than 60 rows, print 60 - enough for states
+library(purrr)
+library(haven)
+library(RSQLite)
+
+library(Hmisc)
+
+library(kableExtra)
+library(gt)
+library(knitr)
+library(arrow)
+
+library(maps)
+# https://cran.r-project.org/web/packages/usmap/vignettes/mapping.html
+library(usmap)
+library(gridExtra)
+library(RcppRoll)
+library(ggbreak)
+library(patchwork)
+library(RColorBrewer)
+
+library(btools)
+library(bdata)
+```
+
+
+```{r locations}
+# acsdir <- r"(E:\data\acs\)"
+# pumsdir <- paste0(acsdir, "pums/")
+# csvdir <- paste0(pumsdir, "csv/")
+
+acsdir <- r"(E:\data\acs\pums\sqlite\)"
+acsfn <- "acs2019_5year"
+acsdb <- paste0(acsdir, acsfn, ".sql3")
+
+```
+
+
+```{r constants}
+# 33-3012	Correctional Officers and Jailers  OES code
+# 3802 Correctional officers and jailers 33-3012   # occ code 2018
+
+
+```
+
+
+```{r load_data}
+load(file=here::here("data", "caloes.rdata"), verbose=TRUE)
+
+```
+
+
+# Descriptive statistics from Cal OES
+```{r}
+count(cal_oes, wtype)
+count(cal_oes, atype)
+
+
+base <- 2009
+dflong <- cal_oes %>%
+  filter(soc=="333012", wtype=="annual", atype=="state") %>%
+  pivot_longer(cols=wage:wp90) %>%
+  group_by(name) %>%
+  mutate(ivalue=value / value[year==base] * 100 - 100,
+         cagr2009=(value / value[year==2009])^(1 / (year - 2009)) * 100 - 100,
+         cagr2012=(value / value[year==2012])^(1 / (year - 2012)) * 100 - 100,
+         cagr2016=(value / value[year==2016])^(1 / (year - 2016)) * 100 - 100)
+
+
+cal_oes %>%
+  filter(soc=="333012", wtype=="annual", atype=="state") %>%
+  ggplot(aes(year, wage)) +
+  geom_line() +
+  geom_point()
+
+dflong %>%
+  ggplot(aes(year, ivalue, colour=name)) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(breaks=seq(-50, 50, 5)) +
+  geom_hline(yintercept = 0)
+
+dflong %>%
+  ggplot(aes(year, cagr2016, colour=name)) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(breaks=seq(-50, 50, 0.5)) +
+  geom_hline(yintercept = 0)
+
+dflong %>%
+  filter(year >= 2012) %>%
+  ggplot(aes(year, cagr2012, colour=name)) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(breaks=seq(-50, 50, 0.5)) +
+  geom_hline(yintercept = 0)
+
+
+```
+
+
+
+# Descriptive statistics from the ACS
+```{r acs_factors}
+# UPDATE THIS
+# RAC1P 1
+# Recoded detailed race code
+# 1 .White alone
+# 2 .Black or African American alone
+# 3 .American Indian alone
+# 4 .Alaska Native alone
+# 5 .American Indian and Alaska Native tribes specified; or American
+# .Indian or Alaska Native, not specified and no other races
+# 6 .Asian alone
+# 7 .Native Hawaiian and Other Pacific Islander alone
+# 8 .Some Other Race alone
+# 9 .Two or More Races
+f_rac1p <- function(rac1p) {
+  levs <- c(1, 2, 6, 3:5, 7:9)
+  labs <- c("White alone", "Black alone", "Asian alone", "Am-Indian alone", "Alaska Native alone",
+            "Am-Ind or AK native tribe", "Hawaiian or PacIsland alone", "Other race alone", "Two or more races")
+  #factor(rac1p, levels=levs, labels=labs, ordered=TRUE)
+  ordered(rac1p, levels=levs, labels=labs)
+}
+
+f_race <- function(rac1p) {
+  levs <- c(1, 2, 6, 3:5, 7:9)
+  x <- factor(rac1p, levels=levs, ordered = TRUE)
+  levels(x) <- list("White alone"=1, 
+                    "Black alone"=2, 
+                    "Asian alone"=6, 
+                    "Other race alone"=c(3:5, 7:8), 
+                    "Two or more races"=9)
+  return(x)
+}
+# table(f_race(c(1:9, 3, 5)))
+
+f_race_hisp <- function(rac1p, hisp) {
+  y <- ifelse(hisp!=1, 0, rac1p)
+  levs <- c(1, 2, 6, 3:5, 7:9)
+  y <- factor(y)
+  levels(y) <- list("White alone, not Hispanic"=1, 
+                    "Black alone, not Hispanic"=2,
+                    "Hispanic, any race"=0,
+                    "Asian alone, not Hispanic"=6,
+                    "Other or multiple race, not Hispanic"=c(3:5, 7:9))
+  return(y)
+}
+
+# (tmp <- f_race_hisp(rac1p=c(1, 1, 2, 2, 6), hisp=c(1, 2, 2, 1, 1)))
+# table(tmp)
+
+f_occgrp <- function(occp) {
+  occgrp <- ifelse(occp=="6230", "carpenter", "other")
+  occgrp <- ifelse(occp >= "6200" & occp <= "6940" & occgrp=="other", "construction", occgrp)
+  occgrp <- ifelse(occp >= "3600" & occp <= "4650" & occgrp=="other", "service", occgrp)
+  return(occgrp)
+}
+
+# f_occgrp(c("6230", "6231", "3610", "9000"))
+```
+
+
+```{r get_acs}
+dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
+db <- dbConnect(SQLite(), dbname=acsdb)
+
+vars <- "serialno, st, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
+
+sqlcmd <- paste0("SELECT ", vars, " FROM pus WHERE occp=3802") # 10 secs
+system.time(df <- collect(tbl(db, sql(sqlcmd))))  # 3 secs
+glimpse(df)
+count(df, st)
+
+df2 <- df %>%
+  left_join(stcodes %>% 
+              select(st=stfips, stabbr) %>% 
+              mutate(st=as.integer(st)),
+            by="st") %>%
+  filter(wagp > 0, agep >= 18) %>%
+  mutate(adjinc=adjinc / 1e6)
+
+sts <- c("CA", "MA", "RI", "CT", "NY", "FL", "NV", "TX") %>% sort
+storder <- c("other", sts)
+df3 <- df2 %>%
+  filter(cow==4) %>%
+  mutate(stgroup=ifelse(stabbr %in% sts, stabbr, "other"),
+         stgroup=factor(stgroup, levels=storder),
+         agep2=agep^2,
+         exp=agep - 18,
+         exp2=exp^2,
+         lwage=log(wagp),
+         sex=factor(sex, levels=1:2, labels=c("male", "female")),
+         edattain=case_when(schl <= 15 ~ "notHSgrad",
+                            schl %in% 16:19 ~ "HSgrad",
+                            schl == 20 ~ "associate",
+                            schl == 21 ~ "BA",
+                            schl %in% 22:24 ~ "MA+",
+                            TRUE ~ "other"),
+         edattain=factor(edattain, levels=c("notHSgrad", "HSgrad", "associate", "BA", "MA+", "other")),
+         marstat=factor(mar, levels=1:5, labels=c("married", "widowed", "divorced", "separated", "neverM")),
+         marstat=factor(mar, levels=1:5, labels=c("marwid", "marwid", rep("notmarwid", 3))))
+# count(df3, stgroup, stabbr)
+count(df3, stgroup, edattain)
+
+
+mod <- lm(lwage ~ sex + stgroup + exp + exp2 + edattain + marstat, data=df3)
+summary(mod)
+
+
+# MAR Character 1
+# Marital status
+# 1 .Married
+# 2 .Widowed
+# 3 .Divorced
+# 4 .Separated
+# 5 .Never married or under 15 years old
+
+
+```
+
+
+
+## Corrections officers
+```{r}
+
+```
+
+
