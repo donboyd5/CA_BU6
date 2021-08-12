@@ -38,6 +38,38 @@ starwars <- read_html("https://rvest.tidyverse.org/articles/starwars.html")
 url <- "https://download.bls.gov/pub/time.series/oe/"
 tmp <- read_html(url)
 
+# BLS OES data ----
+# https://www.bls.gov/oes/current/oes_research_estimates.htm
+# https://www.bls.gov/oes/oes_emp.htm
+# https://www.bls.gov/oes/oes_ques.htm#qf1
+
+
+#.. BLS state OES data ----
+# landing page https://www.bls.gov/oes/tables.htm
+urlbase <- "https://www.bls.gov/oes/special.requests/"
+# 1997-2002 state file names oes97st.zip
+# 2003 May November to -- 2020 May
+#   May https://www.bls.gov/oes/special.requests/oesm03st.zip
+#   November https://www.bls.gov/oes/special.requests/oesn03st.zip
+
+fnames1 <- paste0("oes", str_sub(1997:2002, 3, 4), "st.zip")
+fnames2 <- paste0("oesm", str_sub(2003:2020, 3, 4), "st.zip")  # focus just on May for now??
+fnames <- c(fnames1, fnames2)
+fdir <- r"(E:\data\oesw\states\)"
+
+for(fname in fnames){
+  print(fname)
+  download.file(paste0(urlbase, fname), paste0(fdir, fname), mode="wb")
+}
+
+for(fname in fnames){
+  fpath <- paste0(fdir, fname)
+  unzip(fpath)
+  # unzip(fpath, exdir=fdir)
+}
+
+
+
 
 # California OES data ----
 # https://data.edd.ca.gov/w/geww-ef3u/98fh-2xv7?cur=WqyoLG-9JVV&from=root
@@ -141,4 +173,16 @@ cal_oes %>%
   geom_hline(yintercept = 0)
   
 
+
+# codes ----
+# First-Line Supervisors of Correctional Officers Totals	33-1011				3636	0		3636
+# CAPTAIN, YOUTH AUTHORITY                                                                                                	WU50	9569	2	0		2
+# CORRECTIONAL LIEUTENANT                                                                                                 	WY30	9656	1070	0		1070
+# CORRECTIONAL SERGEANT                                                                                                   	WY40	9659	2523	0		2523
+# LIEUTENANT, YOUTH AUTHORITY                                                                                             	WU70	9574	16	0		16
+# SERGEANT, YOUTH AUTHORITY                                                                                               	WU80	9577	25	0		25
+
+# Correctional Officers and Jailers Totals	33-3012				22062	319		22381
+# CORRECTIONAL OFFICER                                                                                                    	WY50	9662	21852	318		22170
+# YOUTH CORRECTIONAL OFFICER                                                                                              	WU90	9579	210	1		211
 
