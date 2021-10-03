@@ -24,8 +24,6 @@ editor_options:
 ```
 
 
-
-
 ```{r runall, eval=FALSE, echo=FALSE} 
 # When we want a final report, run the following code selectively "by hand" (interactively)
 # -- NEVER using Knit with eval=TRUE
@@ -95,7 +93,18 @@ acsdb <- paste0(acsdir, acsfn, ".sql3")
 ```{r constants}
 # 33-3012	Correctional Officers and Jailers  OES code
 # 3802 Correctional officers and jailers 33-3012   # occ code 2018
+# NY, MA
+# TX, FL
+# AZ, NV, OR, WA
 
+compstates <- c("CA", "AZ", "NV", "OR", "WA", "TX", "FL", "NY", "MA")
+
+
+# sts <- c("CA", "NY", "FL", "NV", "TX")
+# storder <- c("other", sts)
+# 
+# sts <- c("CA", "MA", "RI", "CT", "NY", "FL", "NV", "TX") %>% sort
+# storder <- c("other", sts)
 
 ```
 
@@ -114,6 +123,199 @@ get_stname <- function(stabbr){
 }
 
 ```
+
+# What data for what purpose
+
+
+# Comparisons to Corrections Officers in Other States
+
+## OES data
+```{r oes_notes}
+# https://www.bls.gov/oes/oes_con.htm
+# Two types of OEWS estimates can be downloaded directly from this website in Excel (XLS) format:
+# 
+# Occupational employment and wage estimates by geographic area (national, state, metropolitan, and nonmetropolitan area)
+# National Occupational employment and wage estimates by industry (sector, 3-, 4-, and selected 5- and 6-digit North American Industry Classification System levels)
+# Download Occupational Employment and Wage Estimates
+# 
+# In addition to the estimates that can be downloaded directly from this website, historical OEWS estimates are available upon request through the contact information above. Historical OEWS estimates consist of the 1988 to 1995 national occupational employment and wage data by industry, for most industries at the 2- and 3-digit Standard Industrial Classification (SIC) levels. Estimates for 1988 - 1995 contain only employment data. Between 1988 and 1995 covered industries were surveyed once in a three-year cycle. The OEWS program now surveys all covered industries each year.
+# 
+# Note: 1996 estimates are not available.
+# 
+# OEWS State Employment and Wage Estimates
+# Occupational Employment and Wage Statistics estimates, by occupation and by industry, for individual states are available from the states' Labor Market Information (LMI) or Research, Analysis, and Statistics offices which are part of their State Employment Security Agencies (SESAs). Availability, format and medium of the data varies by state. To obtain OEWS estimates for a particular state, please contact the appropriate office on the State Contact List.
+```
+
+
+
+```{r}
+# main oes data
+# Hi, I'm looking for OES data for states, and possible metro areas, ideally in a single file. I have found the year-by-year state Excel files (https://www.bls.gov/oes/tables.htm) which are awkward to work with but not a bad last resort, and I have found the link for the new OEWS-titled data (https://download.bls.gov/pub/time.series/oe/) but that is only for the latest release. I was hoping you have the historical data in a single csv or flat ASCII file, for all years and states (and maybe metro areas). Would you have a link to a download site for these data? Many thanks in advance. Don Boyd
+
+```
+
+
+
+```{r bls_research}
+#.. BLS state research estimates ----
+# https://www.bls.gov/oes/current/oes_research_estimates.htm
+# The OEWS program provides wage and employment estimates by state and industry
+# beginning with the May 2012 reference period. These estimates are intended for
+# research purposes, and users should be aware of the limitations of the data.
+# Estimates prior to May 2012 are not available. Estimates are only available
+# for states; industry-specific estimates for metropolitan areas are not
+# available. Estimates are only available for detail and major occupation
+# groups; industry-specific estimates for broad and minor occupation groups are
+# not available.
+oes <- readRDS(paste0(resdir, "oesres_sec99.rds"))
+glimpse(oes)
+count(oes, own_code, o_group)
+count(oes, naics_title)
+
+# get 1st-line supervisors and corrections officers
+# 33-1011	First-Line Supervisors of Correctional Officers	High school diploma or equivalent
+# 33-3012	Correctional Officers and Jailers	High school diploma or equivalent
+corr <- oes %>%
+  filter(occ %in% c("33-1011", "33-3012"),
+         !str_detect(naics_title, "Federal")) %>%
+  mutate(level=case_when(str_detect(naics_title, "State") ~ "state",
+                         str_detect(naics_title, "Local") ~ "local",
+                         TRUE ~ "ERROR"))
+count(corr, level, own_code, o_group)
+count(corr, naics_title)
+count(corr, year, level) %>% pivot_wider(names_from = level, values_from = n)
+corr %>% filter(stabbr=="CA", year==2012)
+corr %>% filter(is.na(stabbr))
+count(corr, stabbr)
+summary(corr)  # annual has no data
+
+corr2 <- corr %>%
+  filter(stabbr %in% state.abb) %>%
+  select(year, occ, occname, stabbr, area=area_title, level, emp=tot_emp, awage=a_mean, awage_mdn=a_median)
+
+corr2 %>% filter(stabbr=="CA")
+
+
+```
+
+
+### Graphs and tables of OES research
+```{r}
+
+corr2 %>%
+  filter(year==2020) %>%
+  select(year, occ, occname, stabbr, level, awage) %>%
+  pivot_wider(names_from = level, values_from = awage) %>%
+  group_by(occ) %>%
+  mutate(across(c(state, local), list(rank = ~ rank(-.x)))) %>%
+  ungroup %>%
+  arrange(occ, state_rank)
+
+cols <- c('#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6')
+cols <- c('#a6cee3','#1f78b4','black','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6')
+
+p <- corr2 %>%
+  filter(occ=="33-3012", stabbr %in% compstates, level=="state") %>%
+  mutate(cadum=ifelse(stabbr=="CA", 1, 0) %>% as.factor) %>%
+  arrange(desc(cadum), area) %>%
+  ggplot(aes(year, awage / 1000, colour=area)) +
+  geom_line(size=1.0) +
+  geom_point() +
+  scale_colour_manual(values=cols) +
+  # scale_size_manual(values=c(1, rep(.5, 8))) +
+  labs(y="Average annual wage ($thousands)", x=NULL,
+       caption="Source: U.S. Bureau of Labor Statistics, Occupational Employment and Wage Statistics") +
+  scale_y_continuous(breaks=seq(0, 200, 10), labels = scales::dollar, limits=c(0, NA)) +
+  ggtitle("Average annual salaries of state correctional officers",
+          subtitle="California, neighbors, and selected other states") +
+  theme_bw() +
+  theme(legend.title = element_blank(),
+        plot.caption = element_text(hjust = 0))
+p
+ggsave(here::here("results", "oes_wages.png"), plot = p,
+       width=10, height=8, scale=1)
+
+
+```
+
+
+
+
+## Intra-California
+```{r}
+load(file=here::here("data", "caloes.rdata"), verbose=TRUE)  # just California
+glimpse(cal_oes)
+count(cal_oes, atype)
+count(cal_oes , aname)
+
+```
+
+
+## Education requirements
+```{r}
+# https://www.bls.gov/oes/additional.htm
+# The typical education level required to enter an occupation is based on education and training categories from the BLS Employment Projections program. Because of changes to the occupational classification system that began with the May 2019 OEWS estimates and because the entry-level educational requirements assigned to some occupations have changed, the May 2020 OEWS data by typical-entry level educational requirement are not directly comparable to OEWS typical entry-level education data prior to 2019. The May 2020 estimates are based primarily on the system of education and training requirements used for the 2018-2028 employment projections.
+
+# https://www.bls.gov/oes/2020/may/education_2020.xlsx
+# 33-1011	First-Line Supervisors of Correctional Officers	High school diploma or equivalent
+# 33-3012	Correctional Officers and Jailers	High school diploma or equivalent
+
+# ONETIME
+# ujobed <- "https://www.bls.gov/oes/2020/may/education_2020.xlsx"
+# download.file(url=ujobed, destfile=here::here("data_raw", "education_2020.xlsx"), mode="wb")
+# END ONETIME
+
+jobed1 <- read_excel(here::here("data_raw", "education_2020.xlsx"), sheet = "educ_list", skip=3)
+jobed <- jobed1 %>%
+  setNames(c("occ", "occname", "entryed"))
+count(jobed, entryed)
+jobed %>%
+  filter(str_sub(occ, 1, 2)=="33")
+
+# get 2020 records in CA for HS jobs
+hsjobs <- jobed %>%
+  filter(entryed=="High school diploma or equivalent")
+
+oeshs1 <- readRDS(paste0(resdir, "oesres_allsectors.rds")) %>%
+  filter(stabbr=="CA", year==2020, occ %in% hsjobs$occ)
+
+oeshs2 <- oeshs1 %>%
+  filter(tot_emp >= 1000, i_group=="sector") %>%
+  select(stabbr, year, occ, occname, naics, naics_title, i_group, tot_emp, h_mean, a_mean) %>%
+  arrange(-a_mean)
+
+
+oeshs3 <- oeshs1 %>%
+  filter(tot_emp >= 10000, i_group=="sector", 
+         !str_detect(occname, coll("supervisor", ignore_case = TRUE))) %>%
+  select(stabbr, year, occ, occname, naics, naics_title, i_group, tot_emp, h_mean, a_mean) %>%
+  arrange(-a_mean)
+
+# collapse by occupation ----
+oeshs_mean <- oeshs2 %>%
+  filter(i_group=="sector", 
+         !str_detect(occname, coll("supervisor", ignore_case = TRUE))) %>%
+  mutate(totwage=tot_emp * a_mean) %>%
+  group_by(stabbr, year, occ, occname) %>%
+  summarise(tot_emp=sum(tot_emp), totwage=sum(totwage), .groups = "drop") %>%
+  mutate(awage=totwage / tot_emp) %>%
+  arrange(-awage)
+summary(oeshs_mean)
+
+# Most criminal investigators and detectives earn an associate degree in criminal justice or law enforcement, and some earn a bachelor's degree. Most graduate from a police training academy and work as police officers to gain law enforcement experience. A promotion is often required to become a criminal investigator.
+
+
+# https://www.cdcr.ca.gov/por/minimum-qualifications-2/minimum-qualifications/
+# Graduation from a U.S. high school, G.E.D. or equivalent from a U.S. institution, or a California High School Proficiency Examination (CHSPE) certificate is required, or possession of a college degree (Associate of Arts or higher) from an accredited college or university.
+
+```
+
+
+
+# Ideas
+
+*   Top private sector occs with hs grad in CA vs corrections in CA
+*   Top publics us vs ca, comp to bu6 differential
 
 
 # Descriptive statistics from Cal OES
@@ -252,8 +454,12 @@ sts <- c("CA", "MA", "RI", "CT", "NY", "FL", "NV", "TX") %>% sort
 storder <- c("other", sts)
 df3 <- df2 %>%
   filter(cow==4) %>%
+  group_by(stabbr) %>%
+  mutate(n=n()) %>%
+  ungroup %>%
   mutate(stgroup=ifelse(stabbr %in% sts, stabbr, "other"),
          stgroup=factor(stgroup, levels=storder),
+         stabbr20plus=ifelse(n < 20, "LT20", stabbr),
          agep2=agep^2,
          exp=agep - 18,
          exp2=exp^2,
@@ -270,6 +476,7 @@ df3 <- df2 %>%
          marstat=factor(mar, levels=1:5, labels=c("marwid", "marwid", rep("notmarwid", 3))))
 # count(df3, stgroup, stabbr)
 count(df3, stgroup, edattain)
+count(df3, stabbr)
 
 
 mod <- lm(lwage ~ sex + stgroup + exp + exp2 + edattain + marstat, data=df3)
@@ -284,14 +491,14 @@ summary(mod1)
 mod2 <- feols(lwage ~ sex + stabbr + exp + exp2 + edattain + marstat, data=df3)
 summary(mod2)
 
-mod3 <- feols(lwage ~ sex + exp + exp2 + edattain + marstat | stabbr, data=df3)
+mod3 <- feols(lwage ~ sex + exp + exp2 + edattain + marstat | stabbr20plus, data=df3)
 summary(mod3)
 
 fe <- fixef(mod3)
 summary(fe)
 fe
-fe$stabbr - mean(fe$stabbr)
-tibble(stabbr=names(fe$stabbr), fe=fe$stabbr) %>%
+fe$stabbr20plus - mean(fe$stabbr20plus)
+tibble(stabbr=names(fe$stabbr20plus), fe=fe$stabbr20plus) %>%
   mutate(cfe=fe - mean(fe),
          stname=get_stname(stabbr)) %>%
   ggplot(aes(y=reorder(stname, cfe), x=cfe * 100)) +
@@ -302,23 +509,27 @@ tibble(stabbr=names(fe$stabbr), fe=fe$stabbr) %>%
           subtitle = "After controlling for experience, education, and demographic factors") +
   theme(axis.text.y = element_text(hjust = 0))
 
-df <- tibble(stabbr=names(fe$stabbr), fe=fe$stabbr) %>%
-  mutate(cfe=fe - mean(fe),
-         stname=get_stname(stabbr))
+df <- tibble(stabbr=names(fe$stabbr20plus), fe=fe$stabbr20plus) %>%
+  mutate(stabbr=ifelse(stabbr=="LT20", "Other", stabbr),
+         cfe=fe - mean(fe),
+         stname=get_stname(stabbr),
+         stname=ifelse(stabbr=="Other", "Other", stname))
 
 df %>%
+  filter(stabbr != "Other") %>%
   mutate(grp=ifelse(stabbr=="CA", "CA", "other")) %>%
   ggplot(aes(y=reorder(stname, cfe), x=cfe * 100)) +
   geom_point(aes(colour=grp), size=2) +
   scale_colour_manual(values=c("red", "blue")) +
   theme_minimal() +
   labs(x="% above or below average state", y=NULL) +
-  ggtitle("Correctional officer salaries by state relative to their U.S. average",
-          subtitle = "After controlling for experience, education, and demographic factors") +
+  ggtitle("State correctional officer salaries relative to those in the average state",
+          subtitle = "After controlling for experience, education, and demographic characteristics") +
   theme(axis.text.y = element_text(hjust = 0)) +
   geom_vline(xintercept = 0) +
   scale_x_continuous(breaks=seq(-100, 100, 10)) +
   theme(legend.position = "none")
+
   
  
 # ggplot(aes(y=reorder(stname, change), x=change)) +
