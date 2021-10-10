@@ -3,5 +3,9 @@
 .RData
 .Ruserdata
 data/
+ignore/
+*.html
+*.jpg
+*.png
 *.rdata
 *.rds

@@ -24,7 +24,7 @@ editor_options:
 ```
 
 
-```{r runall, eval=FALSE, echo=FALSE} 
+```{r runall, eval=FALSE, echo=FALSE}
 # When we want a final report, run the following code selectively "by hand" (interactively)
 # -- NEVER using Knit with eval=TRUE
 # note <br> breaks line for html output but \n should break for pdf; also could try |
@@ -52,6 +52,7 @@ knitr::opts_chunk$set(echo = FALSE, include=FALSE, eval=TRUE, message = FALSE, w
 library(tidyverse)
 options(tibble.print_max = 80, tibble.print_min = 80) # if more than 60 rows, print 60 - enough for states
 library(purrr)
+library(readxl)
 library(haven)
 library(RSQLite)
 
@@ -82,6 +83,8 @@ library(bdata)
 # acsdir <- r"(E:\data\acs\)"
 # pumsdir <- paste0(acsdir, "pums/")
 # csvdir <- paste0(pumsdir, "csv/")
+
+resdir <- r"(E:\data\oesw\oes_research\)"
 
 acsdir <- r"(E:\data\acs\pums\sqlite\)"
 acsfn <- "acs2019_5year"
@@ -124,12 +127,14 @@ get_stname <- function(stabbr){
 
 ```
 
+
 # What data for what purpose
 
 
 # Comparisons to Corrections Officers in Other States
 
 ## OES data
+
 ```{r oes_notes}
 # https://www.bls.gov/oes/oes_con.htm
 # Two types of OEWS estimates can be downloaded directly from this website in Excel (XLS) format:
@@ -146,15 +151,11 @@ get_stname <- function(stabbr){
 # Occupational Employment and Wage Statistics estimates, by occupation and by industry, for individual states are available from the states' Labor Market Information (LMI) or Research, Analysis, and Statistics offices which are part of their State Employment Security Agencies (SESAs). Availability, format and medium of the data varies by state. To obtain OEWS estimates for a particular state, please contact the appropriate office on the State Contact List.
 ```
 
-
-
 ```{r}
 # main oes data
 # Hi, I'm looking for OES data for states, and possible metro areas, ideally in a single file. I have found the year-by-year state Excel files (https://www.bls.gov/oes/tables.htm) which are awkward to work with but not a bad last resort, and I have found the link for the new OEWS-titled data (https://download.bls.gov/pub/time.series/oe/) but that is only for the latest release. I was hoping you have the historical data in a single csv or flat ASCII file, for all years and states (and maybe metro areas). Would you have a link to a download site for these data? Many thanks in advance. Don Boyd
 
 ```
-
-
 
 ```{r bls_research}
 #.. BLS state research estimates ----
@@ -198,8 +199,8 @@ corr2 %>% filter(stabbr=="CA")
 
 ```
 
-
 ### Graphs and tables of OES research
+
 ```{r}
 
 corr2 %>%
@@ -238,10 +239,8 @@ ggsave(here::here("results", "oes_wages.png"), plot = p,
 
 ```
 
-
-
-
 ## Intra-California
+
 ```{r}
 load(file=here::here("data", "caloes.rdata"), verbose=TRUE)  # just California
 glimpse(cal_oes)
@@ -250,8 +249,8 @@ count(cal_oes , aname)
 
 ```
 
-
 ## Education requirements
+
 ```{r}
 # https://www.bls.gov/oes/additional.htm
 # The typical education level required to enter an occupation is based on education and training categories from the BLS Employment Projections program. Because of changes to the occupational classification system that began with the May 2019 OEWS estimates and because the entry-level educational requirements assigned to some occupations have changed, the May 2020 OEWS data by typical-entry level educational requirement are not directly comparable to OEWS typical entry-level education data prior to 2019. The May 2020 estimates are based primarily on the system of education and training requirements used for the 2018-2028 employment projections.
@@ -302,23 +301,70 @@ oeshs_mean <- oeshs2 %>%
   arrange(-awage)
 summary(oeshs_mean)
 
+tabdata <- oeshs_mean %>%
+  filter(tot_emp >= 10000) %>%
+  arrange(-awage) %>%
+  mutate(rank=row_number()) %>%
+  select(rank, occ, occname, tot_emp, awage)
+
+tab <- tabdata %>%
+  gt() %>%
+  tab_header(
+    title = "Occupations in California where typical entry education requirement is a high school diploma",
+      subtitle = "Public and/or private sector occupations with at least 10,000 employees"
+      ) %>%
+  cols_label(rank="Rank",
+             occ=md("Code"),
+             occname=md("Occupation"),
+             tot_emp=md("Employment  
+                        in 2020"),
+             awage=md("Average wage  
+                      in 2020")) %>%
+  # tab_spanner(
+  #   label = "Rate adjustment:",
+  #   columns = c(actual, adjust)
+  #   ) %>%
+  fmt_number(
+    columns = c(tot_emp),
+    decimals = 0) %>%
+  fmt_currency(
+    columns = c(awage),
+    decimals = 0) %>%
+  tab_style(
+    style = list(
+      cell_fill(color = "lightgrey")
+      ),
+    locations = cells_body(
+      rows=c(4)
+      )
+    ) %>%
+  tab_source_note("Source: Bureau of Labor Statistics Occupational Employment and Wage Statistics, Research Database.")
+  # tab_footnote(
+  #   footnote = "Source: Bureau of Labor Statistics Occupational Employment and Wage Statistics, Research Database.",
+  #   locations = cells_title(groups = "title")
+  #   )
+
+tab
+gtsave(tab, filename="hspay.png", path=here::here("results"))
+gtsave(tab, filename="hspay2.html", path=here::here("results"))
+
+
 # Most criminal investigators and detectives earn an associate degree in criminal justice or law enforcement, and some earn a bachelor's degree. Most graduate from a police training academy and work as police officers to gain law enforcement experience. A promotion is often required to become a criminal investigator.
 
 
+# California Correctional Officer requirements
 # https://www.cdcr.ca.gov/por/minimum-qualifications-2/minimum-qualifications/
 # Graduation from a U.S. high school, G.E.D. or equivalent from a U.S. institution, or a California High School Proficiency Examination (CHSPE) certificate is required, or possession of a college degree (Associate of Arts or higher) from an accredited college or university.
 
 ```
 
-
-
 # Ideas
 
-*   Top private sector occs with hs grad in CA vs corrections in CA
-*   Top publics us vs ca, comp to bu6 differential
-
+-   Top private sector occs with hs grad in CA vs corrections in CA
+-   Top publics us vs ca, comp to bu6 differential
 
 # Descriptive statistics from Cal OES
+
 ```{r}
 count(cal_oes, wtype)
 count(cal_oes, atype)
@@ -366,11 +412,8 @@ dflong %>%
 
 ```
 
-
-
-
-
 # Descriptive statistics from the ACS
+
 ```{r acs_factors}
 # UPDATE THIS
 # RAC1P 1
@@ -429,7 +472,6 @@ f_occgrp <- function(occp) {
 
 # f_occgrp(c("6230", "6231", "3610", "9000"))
 ```
-
 
 ```{r get_acs}
 dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
@@ -515,7 +557,7 @@ df <- tibble(stabbr=names(fe$stabbr20plus), fe=fe$stabbr20plus) %>%
          stname=get_stname(stabbr),
          stname=ifelse(stabbr=="Other", "Other", stname))
 
-df %>%
+statefe_dots <- df %>%
   filter(stabbr != "Other") %>%
   mutate(grp=ifelse(stabbr=="CA", "CA", "other")) %>%
   ggplot(aes(y=reorder(stname, cfe), x=cfe * 100)) +
@@ -529,7 +571,9 @@ df %>%
   geom_vline(xintercept = 0) +
   scale_x_continuous(breaks=seq(-100, 100, 10)) +
   theme(legend.position = "none")
-
+statefe_dots
+ggsave(here::here("results", "statefe_dots.png"), 
+       plot=statefe_dots, width=10, height=8, scale=1)
   
  
 # ggplot(aes(y=reorder(stname, change), x=change)) +
@@ -559,18 +603,16 @@ summary(mod4)
 
 ```
 
-
-
 ## Corrections officers
+
 ```{r}
 
 ```
 
-
-
 # Notes about other studies
 
 ## Hedonic wage regressions
+
 ```{r eval=FALSE}
 # Biggs Illinois
 # The sample is limited to individuals who work for the state government or for the private sector; federal employees or employees of non-profits are excluded. The sample also is limited to individuals who work 35 or more hours per week and 50 or more weeks per year. The model used here controls for: Years of education; Undergraduate degree field (for those with a college education and above); Potential work experience (equal to age minus years of education minus 6) and experience-squared; Broad occupation (eight categories); place of residence (based upon the Census Bureau’s Public Use Microdata Areas, or PUMAs); Usual hours of work per week; Gender; Race; Hispanicity; Marital status; Immigrant status; Year; and State government employee. Our model has several key differences that can influence the results. First, we control for the number of hours worked per week. Since Illinois state government employees work about 1.5 fewer hours per week than private sector workers, excluding weekly hours worked makes state government employees appear relatively less well paid. Second, we include a variable for the employee’s undergraduate college major, acknowledging that certain majors lead to higher pay in the workforce than others….Third, we include data on the location within the state in which the employee lives.
@@ -581,7 +623,6 @@ summary(mod4)
 
 
 ```
-
 
 ## Benefits
 
@@ -620,5 +661,3 @@ summary(mod4)
 
 
 ```
-
-
