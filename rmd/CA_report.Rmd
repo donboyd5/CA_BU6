@@ -84,11 +84,17 @@ library(bdata)
 # pumsdir <- paste0(acsdir, "pums/")
 # csvdir <- paste0(pumsdir, "csv/")
 
+rppdir <- r"(E:\data\BEA_regional_price_parities\)"
+
 resdir <- r"(E:\data\oesw\oes_research\)"
 
-acsdir <- r"(E:\data\acs\pums\sqlite\)"
+pumsdir <- r"(E:\data\acs\pums\)"
+fnpumscodes <- "ACSPUMS2015_2019CodeLists.xlsx"
+
+sqlitedir <- r"(E:\data\acs\pums\sqlite\)"
+
 acsfn <- "acs2019_5year"
-acsdb <- paste0(acsdir, acsfn, ".sql3")
+acsdb <- paste0(sqlitedir, acsfn, ".sql3")
 
 ```
 
@@ -100,14 +106,8 @@ acsdb <- paste0(acsdir, acsfn, ".sql3")
 # TX, FL
 # AZ, NV, OR, WA
 
-compstates <- c("CA", "AZ", "NV", "OR", "WA", "TX", "FL", "NY", "MA")
+compstates <- c("AZ", "NV", "OR", "WA", "TX", "FL", "NY", "MA")
 
-
-# sts <- c("CA", "NY", "FL", "NV", "TX")
-# storder <- c("other", sts)
-# 
-# sts <- c("CA", "MA", "RI", "CT", "NY", "FL", "NV", "TX") %>% sort
-# storder <- c("other", sts)
 
 ```
 
@@ -128,7 +128,378 @@ get_stname <- function(stabbr){
 ```
 
 
-# What data for what purpose
+# Data prep
+
+## Regional price measures
+```{r rpp_info}
+
+# https://apps.bea.gov/regional/downloadzip.cfm
+# SARPP.zip is states
+# MARPP.zip is metropolitan areas
+
+
+# https://www.bea.gov/news/2020/real-personal-income-state-and-metropolitan-area-2019
+# Regional Price Parities in 2019
+# 
+# Regional price parities (RPPs) measure the differences in price levels across states and metropolitan areas for a given year and are expressed as a percentage of the overall national price level. The all items RPP covers all consumption goods and services, including housing rents. Areas with high/low RPPs typically correspond to areas with high/low price levels for rents.
+# 
+# States with the highest RPPs were Hawaii (119.3), California (116.4), and New York (116.3) (table 3).
+# States with the lowest RPPs were Mississippi (84.4), Arkansas (84.7), and Alabama (85.8).
+# Across states, California had the highest RPP for housing rents (153.6), and Mississippi had the lowest (60.0).
+# Large metropolitan areas with the highest RPPs were San Francisco-Oakland-Berkeley, CA (134.5), New York-Newark-Jersey City, NY-NJ-PA (125.7), and Los Angeles-Long Beach-Anaheim, CA (118.8) (table 6).
+# Large metropolitan areas with the lowest RPPs were Cleveland-Elyria, OH (89.9), St. Louis, MO-IL (90.1), and Cincinnati, OH-KY-IN (90.6).
+# Across large metropolitan areas, San Francisco-Oakland-Berkeley, CA, had the highest RPP for housing rents (200.3), and Cleveland-Elyria, OH, had the lowest (76.3).
+# Across all metropolitan areas, San Jose-Sunnyvale-Santa Clara, CA, had the highest RPP for housing rents (224.0), and Beckley, WV, had the lowest (44.0).
+```
+
+
+```{r get_rpp}
+# con <- unz(paste0(dir, "/", "SQGDP.zip"), fn) # read directly from zip file
+zname <- "SARPP.zip"
+fn <- "SARPP_STATE_2008_2019.csv"
+con <- unz(paste0(rppdir, zname), fn) # read directly from zip file
+df <- read_csv(con, col_types = cols(.default = "c"))
+
+
+
+```
+
+
+## ACS
+
+```{r connect_acsdb}
+dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
+db <- dbConnect(SQLite(), dbname=acsdb)
+
+```
+
+
+```{r acs_occ_codes}
+ocodes1 <- read_excel(paste0(pumsdir, fnpumscodes),
+                      sheet="OCCP & SOCP",
+                      range="A11:C881",
+                      col_names=c("occp", "soc", "occname"))
+ocodes <- ocodes1 %>%
+  filter(nchar(occp)==4) %>%
+  mutate(occp=as.integer(occp))
+
+```
+
+
+```{r acs_factors}
+
+#.. COW Character 1 ----
+# Class of worker
+# b .Not in universe (less than 16 years old/NILF who last worked .more than 5 years ago or never worked)
+# 1 .Employee of a private for-profit company or business, or of an .individual, for wages, salary, or commissions
+# 2 .Employee of a private not-for-profit, tax-exempt, or .charitable organization
+# 3 .Local government employee (city, county, etc.)
+# 4 .State government employee
+# 5 .Federal government employee
+# 6 .Self-employed in own not incorporated business, professional .practice, or farm
+# 7 .Self-employed in own incorporated business, professional .practice or farm
+# 8 .Working without pay in family business or farm
+# 9 .Unemployed and last worked 5 years ago or earlier or never .worked
+
+#.. MAR Character 1 ----
+# Marital status
+# 1 .Married
+# 2 .Widowed
+# 3 .Divorced
+# 4 .Separated
+# 5 .Never married or under 15 years old
+
+#.. RAC1P Character 1 ----
+# Recoded detailed race code
+# 1 .White alone
+# 2 .Black or African American alone
+# 3 .American Indian alone
+# 4 .Alaska Native alone
+# 5 .American Indian and Alaska Native tribes specified; or .American Indian or
+# Alaska Native, not specified and no other races
+# 6 .Asian alone
+# 7 .Native Hawaiian and Other Pacific Islander alone
+# 8 .Some Other Race alone
+# 9 .Two or More Races
+
+#.. SCHL Character 2 ----
+# Educational attainment
+# bb .N/A (less than 3 years old)
+# 01 .No schooling completed
+# 02 .Nursery school, preschool
+# 03 .Kindergarten
+# 04 .Grade 1
+# 05 .Grade 2
+# 06 .Grade 3
+# 07 .Grade 4
+# 08 .Grade 5
+# 09 .Grade 6
+# 10 .Grade 7
+# 11 .Grade 8
+# 12 .Grade 9
+# 13 .Grade 10
+# 14 .Grade 11
+# 15 .12th grade - no diploma
+# 16 .Regular high school diploma
+# 17 .GED or alternative credential
+# 18 .Some college, but less than 1 year
+# 19 .1 or more years of college credit, no degree
+# 20 .Associate's degree
+# 21 .Bachelor's degree
+# 22 .Master's degree
+# 23 .Professional degree beyond a bachelor's degree
+# 24 .Doctorate degree
+
+f_yoschool <- function(schl, agep){
+  # estimate years of schooling based on educational attainment
+  yoschool <- case_when(schl <= 14 ~ 11,  # no higher than 11th grade -- give them 12 years
+                      schl %in% 15:17 ~ 12,  # HS diploma or alternative
+                      schl %in% 18:19 ~ 13,  # +/- another year
+                      schl == 20 ~ 14,  # associate's
+                      schl == 21 ~ 16,  # bachelor's
+                      schl == 22 ~ 18,  # master's -- 2 years?
+                      schl == 23 ~ 19,  # professional degree
+                      schl == 24 ~ 20,  # doctorate
+                      TRUE ~ NA_real_)
+  ifelse(yoschool > agep - 6,
+         agep - 6,
+         yoschool)
+}
+
+
+f_race_hisp <- function(rac1p, hisp) {
+  # hisp==1 is NOT hispanic
+  y <- ifelse(hisp==1, rac1p, 0)
+  y <- factor(y)
+  levels(y) <- list("White alone, not Hispanic"=1, 
+                    "Black alone, not Hispanic"=2,
+                    "Hispanic, any race"=0,
+                    "Asian alone, not Hispanic"=6,
+                    "Other or multiple race, not Hispanic"=c(3:5, 7:9))
+  return(y)
+}
+
+```
+
+
+```{r acs_vardefs}
+
+acsvars_string <- "serialno, st, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
+worker <- expression(wagp > 0, agep >= 18)
+
+create_vars <- function(df){
+  # create multiple new variables for df
+  # df has acs variables
+  df %>%
+    mutate(year=str_sub(serialno, 1, 4) %>% as.integer,
+           adjinc=adjinc / 1e6,
+           rwagp=wagp * adjinc,
+           yoschool=f_yoschool(schl, agep),
+           agep2=agep^2,
+           exp=agep - yoschool - 6,
+           exp2=exp^2,
+           lwage=log(rwagp),
+           sex=factor(sex, levels=1:2, labels=c("male", "female")),
+           edattain=case_when(schl <= 15 ~ "notHSgrad",
+                            schl %in% 16:19 ~ "HSgrad",
+                            schl == 20 ~ "associate",
+                            schl == 21 ~ "BA",
+                            schl %in% 22:24 ~ "MAplus",
+                            TRUE ~ "other"),
+           edattain=factor(
+             edattain,
+             levels=c("notHSgrad", "HSgrad", "associate", "BA", "MAplus", "other")),
+           marstat=factor(
+             mar,
+             levels=1:5,
+             labels=c("married", "widowed", "divorced", "separated", "neverM")))
+  }
+
+# tmp <- df1 %>% mutate(create_vars(.))
+
+
+
+```
+
+
+```{r acs_corrections_US}
+# get all state government corrections officers in the US
+sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE occp=3802") # 10 secs
+system.time(df1 <- collect(tbl(db, sql(sqlcmd))))  # 3 secs
+glimpse(df1)
+count(df1, st)
+
+corr_workers <- df1 %>%
+  filter(eval(worker)) %>% 
+  filter(cow == 4) %>%  # state government
+  left_join(stcodes %>% 
+              select(st=stfips, stabbr) %>% 
+              mutate(st=as.integer(st)),
+            by="st") %>%
+  mutate(create_vars(.)) %>%
+  group_by(stabbr) %>%
+  mutate(n=n()) %>%
+  ungroup
+
+summary(corr_workers)
+
+```
+
+
+## ACS descriptive statistics of correction worker wages across states
+```{r}
+corr_cut <- 50
+
+glimpse(corr_workers)
+corr_workers <- corr_workers %>%
+  mutate(stabbr2=ifelse(n >= corr_cut, stabbr, "other")) 
+count(corr_workers, edattain)
+count(corr_workers, stabbr2)
+
+
+corr_wages <- corr_workers %>%
+  group_by(stabbr2) %>%
+  summarise(n=n(),
+            wtdn=sum(pwgtp),
+            rwagp=wtd.mean(rwagp, weights=pwgtp),
+            exp=wtd.mean(exp, weights=pwgtp))
+
+corr_ed <- corr_workers %>%
+  group_by(stabbr2, edattain) %>%
+  summarise(wtdn=sum(pwgtp), .groups="drop") %>%
+  group_by(stabbr2) %>%
+  mutate(share=wtdn / sum(wtdn)) %>%
+  select(stabbr2, edattain, share) %>%
+  pivot_wider(names_from = edattain, values_from = share, values_fill = 0) %>%
+  mutate(lehs=notHSgrad + HSgrad)
+
+corr_sex <- corr_workers %>%
+  group_by(stabbr2, sex) %>%
+  summarise(wtdn=sum(pwgtp), .groups="drop") %>%
+  group_by(stabbr2) %>%
+  mutate(share=wtdn / sum(wtdn)) %>%
+  select(stabbr2, sex, share) %>%
+  pivot_wider(names_from = sex, values_from = share, values_fill = 0)
+
+corr_summary <- corr_wages %>%
+  left_join(corr_ed, by="stabbr2") %>%
+  left_join(corr_sex %>% select(stabbr2, male), by="stabbr2") %>%
+  mutate(stname=get_stname(stabbr2)) %>%
+  select(stabbr2, stname, n, wtdn, exp, rwagp, male, lehs) %>%
+  arrange(stname)
+
+corr_summary
+corr_summary %>%
+  arrange(desc(lehs))
+
+corr_summary %>%
+  arrange(desc(rwagp))
+
+corr_summary %>%
+  ggplot(aes(male, rwagp, label=stabbr2)) +
+  geom_point(colour="blue", size=1) +
+  geom_text(colour="blue", size=3) +
+  theme_bw()
+
+corr_summary %>%
+  ggplot(aes(lehs, rwagp, label=stabbr2)) +
+  geom_point(colour="blue", size=1) +
+  geom_text(colour="blue", size=3) +
+  theme_bw()
+
+corr_summary %>%
+  ggplot(aes(lehs, rwagp, label=stabbr2)) +
+  geom_point(colour="blue", size=1) +
+  geom_text(colour="blue", size=3) +
+  theme_bw()
+
+corr_summary %>%
+  ggplot(aes(exp, rwagp, label=stabbr2)) +
+  geom_point(colour="blue", size=1) +
+  geom_text(colour="blue", size=3) +
+  theme_bw()
+
+
+```
+
+
+
+## ACS models of correction worker wages across states
+```{r acs_corr_models}
+
+mod <- lm(lwage ~ sex + stgroup + exp + exp2 + edattain + marstat, data=df3)
+summary(mod)
+
+mod1 <- lm(lwage ~ sex + stabbr + exp + exp2 + edattain + marstat, data=df3)
+summary(mod1)
+
+# https://cran.r-project.org/web/packages/fixest/fixest.pdf
+# https://cran.r-project.org/web/packages/fixest/vignettes/fixest_walkthrough.html
+# feols(log(Euros) ~ log(dist_km) | Origin + Destination + Product + Year, trade)
+mod2 <- feols(lwage ~ sex + stabbr + exp + exp2 + edattain + marstat, data=df3)
+summary(mod2)
+
+mod3 <- feols(lwage ~ sex + exp + exp2 + edattain + marstat | stabbr20plus, data=df3)
+summary(mod3)
+
+fe <- fixef(mod3)
+summary(fe)
+fe
+fe$stabbr20plus - mean(fe$stabbr20plus)
+tibble(stabbr=names(fe$stabbr20plus), fe=fe$stabbr20plus) %>%
+  mutate(cfe=fe - mean(fe),
+         stname=get_stname(stabbr)) %>%
+  ggplot(aes(y=reorder(stname, cfe), x=cfe * 100)) +
+  geom_col(fill="blue") +
+  theme_minimal() +
+  labs(x="% above or below average state", y=NULL) +
+  ggtitle("Correctional officer salaries relative to U.S. average correctional officer salaries",
+          subtitle = "After controlling for experience, education, and demographic factors") +
+  theme(axis.text.y = element_text(hjust = 0))
+
+df <- tibble(stabbr=names(fe$stabbr20plus), fe=fe$stabbr20plus) %>%
+  mutate(stabbr=ifelse(stabbr=="LT20", "Other", stabbr),
+         cfe=fe - mean(fe),
+         stname=get_stname(stabbr),
+         stname=ifelse(stabbr=="Other", "Other", stname))
+
+statefe_dots <- df %>%
+  filter(stabbr != "Other") %>%
+  mutate(grp=ifelse(stabbr=="CA", "CA", "other")) %>%
+  ggplot(aes(y=reorder(stname, cfe), x=cfe * 100)) +
+  geom_point(aes(colour=grp), size=2) +
+  scale_colour_manual(values=c("red", "blue")) +
+  theme_minimal() +
+  labs(x="% above or below average state", y=NULL) +
+  ggtitle("State correctional officer salaries relative to those in the average state",
+          subtitle = "After controlling for experience, education, and demographic characteristics") +
+  theme(axis.text.y = element_text(hjust = 0)) +
+  geom_vline(xintercept = 0) +
+  scale_x_continuous(breaks=seq(-100, 100, 10)) +
+  theme(legend.position = "none")
+statefe_dots
+ggsave(here::here("results", "statefe_dots.png"), 
+       plot=statefe_dots, width=10, height=8, scale=1)
+  
+ 
+# ggplot(aes(y=reorder(stname, change), x=change)) +
+plot(fe)
+plot(fe, n=51)
+fe$stabbr
+coef(mod3)
+coeftable(mod3)
+confint(mod3)
+confint(mod3, se="cluster")  # same, because default is stabbr clustering
+etable(mod3)
+fitstat(mod3, type = "r2")
+fitstat(mod3, type = "rmse")
+
+
+mod4 <- feols(lwage ~ sex + exp + exp2 + edattain + marstat | stabbr, weights=df3$pwgtp, data=df3)
+summary(mod4)
+
+```
+
 
 
 # Comparisons to Corrections Officers in Other States
@@ -272,40 +643,84 @@ jobed %>%
   filter(str_sub(occ, 1, 2)=="33")
 
 # get 2020 records in CA for HS jobs
-hsjobs <- jobed %>%
-  filter(entryed=="High school diploma or equivalent")
+# hsjobs <- jobed %>%
+#   filter(entryed=="High school diploma or equivalent")
+# 
+# oeshs1 <- readRDS(paste0(resdir, "oesres_allsectors.rds")) %>%
+#   filter(stabbr=="CA", year==2020, occ %in% hsjobs$occ)
+# 
+# oeshs2 <- oeshs1 %>%
+#   filter(tot_emp >= 1000, i_group=="sector") %>%
+#   select(stabbr, year, occ, occname, naics, naics_title, i_group, tot_emp, h_mean, a_mean) %>%
+#   arrange(-a_mean)
+# 
+# 
+# oeshs3 <- oeshs1 %>%
+#   filter(tot_emp >= 10000, i_group=="sector", 
+#          !str_detect(occname, coll("supervisor", ignore_case = TRUE))) %>%
+#   select(stabbr, year, occ, occname, naics, naics_title, i_group, tot_emp, h_mean, a_mean) %>%
+#   arrange(-a_mean)
+# 
+# # collapse by occupation ----
+# oeshs_mean <- oeshs2 %>%
+#   filter(i_group=="sector", 
+#          !str_detect(occname, coll("supervisor", ignore_case = TRUE))) %>%
+#   mutate(totwage=tot_emp * a_mean) %>%
+#   group_by(stabbr, year, occ, occname) %>%
+#   summarise(tot_emp=sum(tot_emp), totwage=sum(totwage), .groups = "drop") %>%
+#   mutate(awage=totwage / tot_emp) %>%
+#   arrange(-awage)
+# summary(oeshs_mean)
+# 
+# tabdata <- oeshs_mean %>%
+#   filter(tot_emp >= 10000) %>%
+#   arrange(-awage) %>%
+#   mutate(rank=row_number()) %>%
+#   select(rank, occ, occname, tot_emp, awage)
 
-oeshs1 <- readRDS(paste0(resdir, "oesres_allsectors.rds")) %>%
-  filter(stabbr=="CA", year==2020, occ %in% hsjobs$occ)
-
-oeshs2 <- oeshs1 %>%
-  filter(tot_emp >= 1000, i_group=="sector") %>%
+# alternative approach to tabdata
+tabbase <- 
+  readRDS(paste0(resdir, "oesres_allsectors.rds")) %>%
+  filter(stabbr=="CA", year==2020) %>%# my alternative
+  filter(i_group=="sector", !is.na(a_mean), !is.na(tot_emp)) %>% # djb verify this
   select(stabbr, year, occ, occname, naics, naics_title, i_group, tot_emp, h_mean, a_mean) %>%
-  arrange(-a_mean)
-
-
-oeshs3 <- oeshs1 %>%
-  filter(tot_emp >= 10000, i_group=="sector", 
-         !str_detect(occname, coll("supervisor", ignore_case = TRUE))) %>%
-  select(stabbr, year, occ, occname, naics, naics_title, i_group, tot_emp, h_mean, a_mean) %>%
-  arrange(-a_mean)
-
-# collapse by occupation ----
-oeshs_mean <- oeshs2 %>%
-  filter(i_group=="sector", 
-         !str_detect(occname, coll("supervisor", ignore_case = TRUE))) %>%
+  # collapse by occupation
+  filter(i_group=="sector") %>%
+  # filter(!str_detect(occname, coll("supervisor", ignore_case = TRUE))) %>%
   mutate(totwage=tot_emp * a_mean) %>%
   group_by(stabbr, year, occ, occname) %>%
   summarise(tot_emp=sum(tot_emp), totwage=sum(totwage), .groups = "drop") %>%
-  mutate(awage=totwage / tot_emp) %>%
-  arrange(-awage)
-summary(oeshs_mean)
+  mutate(awage=totwage / tot_emp)
 
-tabdata <- oeshs_mean %>%
-  filter(tot_emp >= 10000) %>%
-  arrange(-awage) %>%
-  mutate(rank=row_number()) %>%
-  select(rank, occ, occname, tot_emp, awage)
+
+# get top 20 jobs by employment plus all other
+pct_leHS <- 70
+ncats <- 40
+minemp <- 5000
+# 	53-7062
+tabdata <- tabbase %>%
+  left_join(hscodes %>%
+              select(occ=occ2, pct), by="occ") %>%
+  filter(pct >= pct_leHS) %>%
+  arrange(desc(tot_emp)) %>%
+  mutate(erank=row_number(),
+         # pick one or the other of the following
+         keep=ifelse(erank <= ncats, TRUE, FALSE),
+         # keep=ifelse(tot_emp >= minemp, TRUE, FALSE),
+         # now use it
+         egroup=ifelse(keep, erank, 999),
+         occ=ifelse(keep, occ, ""),
+         occname=ifelse(keep, occname, "  All other")) %>%
+  group_by(keep, stabbr, year, occ, occname) %>%
+  summarise(tot_emp=sum(tot_emp), totwage=sum(totwage), .groups = "drop") %>%
+  mutate(awage=totwage / tot_emp,
+         premium=awage[occ=="33-3012"] / awage - 1) %>%
+  arrange(desc(keep), -awage) %>%
+  mutate(rank=ifelse(keep, row_number(), NA_real_)) %>%
+  select(rank, occ, occname, tot_emp, awage, premium)
+tabdata
+
+count(tabdata, keep)
 
 tab <- tabdata %>%
   gt() %>%
@@ -335,7 +750,7 @@ tab <- tabdata %>%
       cell_fill(color = "lightgrey")
       ),
     locations = cells_body(
-      rows=c(4)
+      rows=c(1)
       )
     ) %>%
   tab_source_note("Source: Bureau of Labor Statistics Occupational Employment and Wage Statistics, Research Database.")
@@ -345,18 +760,121 @@ tab <- tabdata %>%
   #   )
 
 tab
-gtsave(tab, filename="hspay.png", path=here::here("results"))
-gtsave(tab, filename="hspay2.html", path=here::here("results"))
+# gtsave(tab, filename="hspay.png", path=here::here("results"))
+gtsave(tab, filename="hspay_v2.html", path=here::here("results"))
 
 
 # Most criminal investigators and detectives earn an associate degree in criminal justice or law enforcement, and some earn a bachelor's degree. Most graduate from a police training academy and work as police officers to gain law enforcement experience. A promotion is often required to become a criminal investigator.
+
+#djb: While BLS says that Detectives and Criminal Investigators (the highest paying HS job on the list) typically need a HS diploma for entry, CalHR (https://www.calhr.ca.gov/state-hr-professionals/pages/8610.aspx) says all levels of the criminal investigator series need to have the equivalent of at least 2 years of college. 
 
 
 # California Correctional Officer requirements
 # https://www.cdcr.ca.gov/por/minimum-qualifications-2/minimum-qualifications/
 # Graduation from a U.S. high school, G.E.D. or equivalent from a U.S. institution, or a California High School Proficiency Examination (CHSPE) certificate is required, or possession of a college degree (Associate of Arts or higher) from an accredited college or university.
 
+#.. CalHR job requirements ----
+# Correctional officer
+# https://www.calhr.ca.gov/state-hr-professionals/Pages/9662.aspx
+# Education: Equivalent to completion of the twelfth grade.
+
+# Investigator Series
+# https://www.calhr.ca.gov/state-hr-professionals/pages/8610.aspx
+# Education requirements are more stringent but it is possible to substitute experience for education.
+# For example, one of the education requirements is:
+# Education: Equivalent to completion of two years of college with a major in criminal justice, law enforcement, criminology, administration of justice, police science, or a comparable field of study. (Additional qualifying experience may be substituted for the required education on a year-for-year basis. Applicants who are being considered for Investigator positions assigned as Peace Officer status (as defined by California state law) must possess the educational equivalent to completion of the twelfth grade.) and
+
+
+# BLS ----
+# https://www.onetonline.org/link/summary/33-3051.00  Police and detectives etc...
+# Job Zone: Education	Most occupations in this zone require training in vocational schools, related on-the-job experience, or an associate's degree.
+
+# https://www.onetonline.org/link/summary/33-3012.00 Correctional officer
+# Education	These occupations usually require a high school diploma.
+
+# https://www.onetonline.org/link/summary/11-3071.00 Transportation, Storage, and Distribution Managers
+# Education	Most of these occupations require a four-year bachelor's degree, but some do not.
+
+
 ```
+
+### Education data development
+```{r}
+# find jobs with similar education requirements to corrections officers
+edir <- r"(E:\data\CA_BU6_project\db_26_0_excel\)"
+fnecats <- "Education, Training, and Experience Categories.xlsx"
+fneoccs <- "Education, Training, and Experience.xlsx"
+
+ecats1 <- read_excel(paste0(edir, fnecats), sheet=1)
+eoccs1 <- read_excel(paste0(edir, fneoccs), sheet=1)
+
+catnames <- c("elid", "elname", "scaleid", "scalename", "cat", "catdesc")
+ecats <- ecats1 %>%
+  setNames(catnames)
+
+ednames <- c("occ", "occname", "elid", "elname", "scaleid", "scalename", "cat", "pct",
+             "n", "se", "lci", "uci", "recsuppress", "date", "domain")
+eoccs <- eoccs1 %>%
+  setNames(ednames)
+
+#.. edoccs 33-3012.00 ----
+# create factors for education
+edcodes <- ecats %>%
+  filter(scaleid=="RL") %>%
+  # create short labels
+  mutate(catlabel=case_when(cat == 3 ~ "Post-Secondary Certificate",
+                            cat == 7 ~ "Post-Baccalaureate Certificate",
+                            cat == 9 ~ "Post-Master's Certificate",
+                            cat == 10 ~ "First Professional Degree",
+                            TRUE ~      catdesc))
+
+edoccs <- eoccs %>%
+  filter(scaleid=="RL") %>%
+  select(occ, occname, cat, pct, recsuppress, n) %>%
+  left_join(edcodes %>% select(cat, catlabel), by="cat")
+
+# hsjobs <- edoccs %>%
+#   filter(cat==2, pct>=80)
+# hsjobs %>% 
+#   arrange(desc(pct))
+
+# hscodes <- edoccs %>%
+#   filter(cat==2, pct>=70) %>%
+#   mutate(occ2=str_sub(occ, 1, 7)) %>%
+#   .$occ2
+
+hscodes <- edoccs %>%
+  filter(cat %in% c(1, 2)) %>%
+  group_by(occ, occname) %>%
+  summarise(pct=sum(pct), n=sum(n), .groups = "drop") %>%
+  mutate(occ2=str_sub(occ, 1, 7)) %>%
+  arrange(desc(pct))
+
+hscodes %>% filter(str_detect(occ, "53-7062")) # djb figure this out!!
+# also this
+# 1-3031.01
+# Treasurers and Controllers
+# 0.00
+# 50
+# 11-3031
+# 10
+# 11-3031.03
+# Investment Fund Managers
+# 0.00
+# 50
+# 11-3031
+  
+hscodes %>% filter(str_detect(occname, "Correction"))  
+  
+  
+  
+
+
+```
+
+
+
+
 
 # Ideas
 
@@ -414,98 +932,48 @@ dflong %>%
 
 # Descriptive statistics from the ACS
 
-```{r acs_factors}
-# UPDATE THIS
-# RAC1P 1
-# Recoded detailed race code
-# 1 .White alone
-# 2 .Black or African American alone
-# 3 .American Indian alone
-# 4 .Alaska Native alone
-# 5 .American Indian and Alaska Native tribes specified; or American
-# .Indian or Alaska Native, not specified and no other races
-# 6 .Asian alone
-# 7 .Native Hawaiian and Other Pacific Islander alone
-# 8 .Some Other Race alone
-# 9 .Two or More Races
-f_rac1p <- function(rac1p) {
-  levs <- c(1, 2, 6, 3:5, 7:9)
-  labs <- c("White alone", "Black alone", "Asian alone", "Am-Indian alone", "Alaska Native alone",
-            "Am-Ind or AK native tribe", "Hawaiian or PacIsland alone", "Other race alone", "Two or more races")
-  #factor(rac1p, levels=levs, labels=labs, ordered=TRUE)
-  ordered(rac1p, levels=levs, labels=labs)
-}
 
-f_race <- function(rac1p) {
-  levs <- c(1, 2, 6, 3:5, 7:9)
-  x <- factor(rac1p, levels=levs, ordered = TRUE)
-  levels(x) <- list("White alone"=1, 
-                    "Black alone"=2, 
-                    "Asian alone"=6, 
-                    "Other race alone"=c(3:5, 7:8), 
-                    "Two or more races"=9)
-  return(x)
-}
-# table(f_race(c(1:9, 3, 5)))
 
-f_race_hisp <- function(rac1p, hisp) {
-  y <- ifelse(hisp!=1, 0, rac1p)
-  levs <- c(1, 2, 6, 3:5, 7:9)
-  y <- factor(y)
-  levels(y) <- list("White alone, not Hispanic"=1, 
-                    "Black alone, not Hispanic"=2,
-                    "Hispanic, any race"=0,
-                    "Asian alone, not Hispanic"=6,
-                    "Other or multiple race, not Hispanic"=c(3:5, 7:9))
-  return(y)
-}
+```{r get_corrections}
 
-# (tmp <- f_race_hisp(rac1p=c(1, 1, 2, 2, 6), hisp=c(1, 2, 2, 1, 1)))
-# table(tmp)
-
-f_occgrp <- function(occp) {
-  occgrp <- ifelse(occp=="6230", "carpenter", "other")
-  occgrp <- ifelse(occp >= "6200" & occp <= "6940" & occgrp=="other", "construction", occgrp)
-  occgrp <- ifelse(occp >= "3600" & occp <= "4650" & occgrp=="other", "service", occgrp)
-  return(occgrp)
-}
-
-# f_occgrp(c("6230", "6231", "3610", "9000"))
 ```
 
-```{r get_acs}
-dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
-db <- dbConnect(SQLite(), dbname=acsdb)
 
+## Examine California with ACS
+```{r}
 vars <- "serialno, st, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
+sqlcmd <- paste0("SELECT ", vars, " FROM pus WHERE st=06") # 10 secs
 
-sqlcmd <- paste0("SELECT ", vars, " FROM pus WHERE occp=3802") # 10 secs
-system.time(df <- collect(tbl(db, sql(sqlcmd))))  # 3 secs
-glimpse(df)
-count(df, st)
+system.time(cadf <- collect(tbl(db, sql(sqlcmd))))  # 4 secs
+glimpse(cadf)
+count(cadf, st) # 1.9m
 
-df2 <- df %>%
-  left_join(stcodes %>% 
-              select(st=stfips, stabbr) %>% 
-              mutate(st=as.integer(st)),
-            by="st") %>%
-  filter(wagp > 0, agep >= 18) %>%
-  mutate(adjinc=adjinc / 1e6)
+# cadf %>% 
+#   mutate(year=str_sub(serialno, 1, 4)) %>% 
+#   group_by(year) %>%
+#   summarise(minadjinc=min(adjinc), maxadjinc=max(adjinc))
+#   year  minadjinc maxadjinc
+#   <chr>     <int>     <int>
+# 1 2015    1080470   1080470
+# 2 2016    1073449   1073449
+# 3 2017    1054606   1054606
+# 4 2018    1031452   1031452
+# 5 2019    1010145   1010145
 
-sts <- c("CA", "MA", "RI", "CT", "NY", "FL", "NV", "TX") %>% sort
-storder <- c("other", sts)
-df3 <- df2 %>%
-  filter(cow==4) %>%
-  group_by(stabbr) %>%
-  mutate(n=n()) %>%
-  ungroup %>%
-  mutate(stgroup=ifelse(stabbr %in% sts, stabbr, "other"),
-         stgroup=factor(stgroup, levels=storder),
-         stabbr20plus=ifelse(n < 20, "LT20", stabbr),
+caworkers <- cadf %>%
+  filter(wagp > 0, agep >= 18, cow %in% 1:5) %>%
+  left_join(ocodes, by="occp") %>%
+  mutate(year=str_sub(serialno, 1, 4),
+         adjinc=adjinc / 1e6,
+         yoschool=f_yoschool(schl),
+         yoschool=ifelse(yoschool > agep - 6,
+                         agep - 6,
+                         yoschool),
+         rwagp=wagp * adjinc,
          agep2=agep^2,
-         exp=agep - 18,
+         exp=agep - yoschool - 6,
          exp2=exp^2,
-         lwage=log(wagp),
+         lwage=log(rwagp),
          sex=factor(sex, levels=1:2, labels=c("male", "female")),
          edattain=case_when(schl <= 15 ~ "notHSgrad",
                             schl %in% 16:19 ~ "HSgrad",
@@ -513,95 +981,105 @@ df3 <- df2 %>%
                             schl == 21 ~ "BA",
                             schl %in% 22:24 ~ "MA+",
                             TRUE ~ "other"),
-         edattain=factor(edattain, levels=c("notHSgrad", "HSgrad", "associate", "BA", "MA+", "other")),
-         marstat=factor(mar, levels=1:5, labels=c("married", "widowed", "divorced", "separated", "neverM")),
-         marstat=factor(mar, levels=1:5, labels=c("marwid", "marwid", rep("notmarwid", 3))))
-# count(df3, stgroup, stabbr)
-count(df3, stgroup, edattain)
-count(df3, stabbr)
+         edattain=factor(
+           edattain, 
+           levels=c("notHSgrad", "HSgrad", "associate", "BA", "MA+", "other")),
+         marstat=factor(
+           mar, 
+           levels=1:5, 
+           labels=c("married", "widowed", "divorced", "separated", "neverM")))
+summary(caworkers)
+
+count(caworkers, occp, occname) %>% arrange(-n)
+count(caworkers, occp, soc, occname) %>% filter(str_sub(soc, 1, 3)=="33-")
+
+# what are HS jobs?
+jobeduc <- caworkers %>%
+  group_by(soc, occp, occname, edattain) %>%
+  summarise(n=n(),
+            pwgtp=sum(pwgtp),
+            yoschool=median(yoschool, na.rm=TRUE), 
+            .groups="drop") %>%
+  group_by(soc, occp, occname) %>%
+  summarise(n=sum(n),
+            wtdn=sum(pwgtp),
+            lehs=sum(pwgtp[edattain %in% c("notHSgrad", "HSgrad")]),
+            assoc=sum(pwgtp[edattain %in% c("associate")]),
+            ba=sum(pwgtp[edattain %in% c("BA")]),
+            maplus=sum(pwgtp[edattain %in% c("MA+")]),
+            .groups="drop") %>%
+  mutate(across(c(lehs, assoc, ba, maplus), ~ .x / wtdn))
+summary(jobeduc)
+jobeduc %>% filter(str_sub(soc, 1, 3)=="33-")
+# hsjobs <- jobeduc %>%
+#   filter(lehspct >= .55)
+
+caworkers2 <- caworkers %>%
+  left_join(jobeduc %>%
+              select(occp, lehs, assoc, ba, maplus),
+            by="occp")
+
+tmp <- caworkers2 %>%
+  filter(lehs >= .6, lehs <= .7)
+
+tmp %>%
+  filter(!str_detect(occname, coll("supervisor", ignore_case = FALSE))) %>%
+  group_by(soc, occp, occname) %>%
+  summarise(n=n(), wtdn=sum(pwgtp), 
+            across(c(lehs, assoc, ba, maplus), ~ first(.x)), 
+            rwagp=wtd.mean(rwagp, weights = pwgtp)) %>%
+  arrange(-rwagp)
+         
+```
 
 
-mod <- lm(lwage ~ sex + stgroup + exp + exp2 + edattain + marstat, data=df3)
-summary(mod)
+```{r quick_regression}
+glimpse(caworkers)
 
-mod1 <- lm(lwage ~ sex + stabbr + exp + exp2 + edattain + marstat, data=df3)
+hsj <- jobeduc %>%
+  mutate(colehs=lehs[soc=="33-3012"]) %>%
+  filter(lehs >= .6, lehs <= .7, wtdn >= 5000)
+  # filter(lehs >= (colehs - .05), lehs <= (colehs + .05))
+
+mod1 <- feols(lwage ~ edattain + sex + exp + exp2 + marstat | soc, data=caworkers)
 summary(mod1)
 
-# https://cran.r-project.org/web/packages/fixest/fixest.pdf
-# https://cran.r-project.org/web/packages/fixest/vignettes/fixest_walkthrough.html
-# feols(log(Euros) ~ log(dist_km) | Origin + Destination + Product + Year, trade)
-mod2 <- feols(lwage ~ sex + stabbr + exp + exp2 + edattain + marstat, data=df3)
-summary(mod2)
+regdf <- caworkers %>% 
+  filter(soc %in% hsj$soc) %>%
+  mutate(female=sex=="female",
+         married=marstat %in% c("married"))
+count(regdf, edattain)
+count(regdf, sex)
+count(regdf, marstat)
 
-mod3 <- feols(lwage ~ sex + exp + exp2 + edattain + marstat | stabbr20plus, data=df3)
-summary(mod3)
+mod2 <- feols(lwage ~ edattain + sex + exp + exp2 + marstat -1 | soc, data=regdf)
+# mod2 <- feols(lwage ~ edattain + exp + exp2 + female + married - 1 | soc, data=regdf)
+summary(mod2)  # default clusters on soc
+# summary(mod2, cluster= ~ soc)
 
-fe <- fixef(mod3)
-summary(fe)
+# tmp <- feols(lwage ~ edattain + sex + exp + exp2 + marstat -1 | soc, data=regdf, demeaned = TRUE)
+# fixef(tmp)
+
+# fe <- fixef(mod1)
+fe <- fixef(mod2)
 fe
-fe$stabbr20plus - mean(fe$stabbr20plus)
-tibble(stabbr=names(fe$stabbr20plus), fe=fe$stabbr20plus) %>%
-  mutate(cfe=fe - mean(fe),
-         stname=get_stname(stabbr)) %>%
-  ggplot(aes(y=reorder(stname, cfe), x=cfe * 100)) +
-  geom_col(fill="blue") +
-  theme_minimal() +
-  labs(x="% above or below average state", y=NULL) +
-  ggtitle("Correctional officer salaries relative to U.S. average correctional officer salaries",
-          subtitle = "After controlling for experience, education, and demographic factors") +
-  theme(axis.text.y = element_text(hjust = 0))
+summary(fe)
+fe$soc["33-3012"]
+p <- plot(fe)
+p
+str(p)
 
-df <- tibble(stabbr=names(fe$stabbr20plus), fe=fe$stabbr20plus) %>%
-  mutate(stabbr=ifelse(stabbr=="LT20", "Other", stabbr),
-         cfe=fe - mean(fe),
-         stname=get_stname(stabbr),
-         stname=ifelse(stabbr=="Other", "Other", stname))
+cfe <- tibble(soc=names(fe$soc), fe=fe$soc) %>%
+  left_join(ocodes, by="soc") %>%
+  mutate(cfe=fe - mean(fe)) %>% # centered fixed effects
+  arrange(-cfe) %>%
+  mutate(rank=row_number())
 
-statefe_dots <- df %>%
-  filter(stabbr != "Other") %>%
-  mutate(grp=ifelse(stabbr=="CA", "CA", "other")) %>%
-  ggplot(aes(y=reorder(stname, cfe), x=cfe * 100)) +
-  geom_point(aes(colour=grp), size=2) +
-  scale_colour_manual(values=c("red", "blue")) +
-  theme_minimal() +
-  labs(x="% above or below average state", y=NULL) +
-  ggtitle("State correctional officer salaries relative to those in the average state",
-          subtitle = "After controlling for experience, education, and demographic characteristics") +
-  theme(axis.text.y = element_text(hjust = 0)) +
-  geom_vline(xintercept = 0) +
-  scale_x_continuous(breaks=seq(-100, 100, 10)) +
-  theme(legend.position = "none")
-statefe_dots
-ggsave(here::here("results", "statefe_dots.png"), 
-       plot=statefe_dots, width=10, height=8, scale=1)
-  
- 
-# ggplot(aes(y=reorder(stname, change), x=change)) +
-plot(fe)
-plot(fe, n=51)
-fe$stabbr
-coef(mod3)
-coeftable(mod3)
-confint(mod3)
-confint(mod3, se="cluster")  # same, because default is stabbr clustering
-etable(mod3)
-fitstat(mod3, type = "r2")
-fitstat(mod3, type = "rmse")
-
-
-mod4 <- feols(lwage ~ sex + exp + exp2 + edattain + marstat | stabbr, weights=df3$pwgtp, data=df3)
-summary(mod4)
-
-# MAR Character 1
-# Marital status
-# 1 .Married
-# 2 .Widowed
-# 3 .Divorced
-# 4 .Separated
-# 5 .Never married or under 15 years old
-
+cfe %>% filter(soc=="33-3012")
 
 ```
+
+
 
 ## Corrections officers
 
