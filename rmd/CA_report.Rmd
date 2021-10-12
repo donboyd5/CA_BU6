@@ -12,7 +12,7 @@ output:
     toc_float: true
     number_sections: yes
 editor_options:
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 
@@ -108,12 +108,14 @@ acsdb <- paste0(sqlitedir, acsfn, ".sql3")
 
 compstates <- c("AZ", "NV", "OR", "WA", "TX", "FL", "NY", "MA")
 
-
 ```
 
 
 ```{r load_data}
 load(file=here::here("data", "caloes.rdata"), verbose=TRUE)
+load(file=here::here("data", "rpp.rdata"), verbose=TRUE) # max year is 2019 for all
+glimpse(sarpp)
+glimpse(marpp)
 
 ```
 
@@ -160,6 +162,72 @@ fn <- "SARPP_STATE_2008_2019.csv"
 con <- unz(paste0(rppdir, zname), fn) # read directly from zip file
 df <- read_csv(con, col_types = cols(.default = "c"))
 
+sarpp1 <- df %>%
+  filter(LineCode=="1") %>%
+  mutate(stfips=str_sub(GeoFIPS, 1, 2)) %>%
+  left_join(stcodes %>% select(stfips, stabbr), by = "stfips")
+sarpp1 %>% select(stfips, stabbr, GeoName)
+  
+sarpp <- sarpp1 %>%
+  pivot_longer(cols=`2008`:`2019`, names_to = "year", values_to = "rpp") %>%
+  mutate(year=as.integer(year), rpp=as.numeric(rpp)) %>%
+  select(stabbr, year, rpp)
+
+sarpp %>%
+  filter(stabbr %in% c("US", "CA", "NY", "FL", "TX", "MA")) %>%
+  ggplot(aes(year, rpp, colour=stabbr)) +
+  geom_line() +
+  geom_point()
+
+# now get metropolitan indexes
+zname <- "MARPP.zip"
+fn <- "MARPP_MSA_2008_2019.csv"
+con <- unz(paste0(rppdir, zname), fn) # read directly from zip file
+df <- read_csv(con, col_types = cols(.default = "c"))
+glimpse(df)
+
+marpp <- df %>%
+  filter(LineCode=="1") %>%
+  pivot_longer(cols=`2008`:`2019`, names_to = "year", values_to = "rpp") %>%
+  mutate(year=as.integer(year), rpp=as.numeric(rpp)) %>%
+  select(fips=GeoFIPS, geoname=GeoName, year, rpp)
+
+# which ones are in California
+carpp <- marpp %>%
+  filter(str_detect(geoname, coll("CA")))
+count(carpp, fips, geoname)
+
+save(sarpp, marpp, carpp, file=here::here("data", "rpp.rdata"))
+
+# There are 26 Californial regional price indexes
+# fips  geoname                                                                  n
+#    <chr> <chr>                                                                <int>
+#  1 12540 Bakersfield, CA (Metropolitan Statistical Area)                         12
+#  2 17020 Chico, CA (Metropolitan Statistical Area)                               12
+#  3 20940 El Centro, CA (Metropolitan Statistical Area)                           12
+#  4 23420 Fresno, CA (Metropolitan Statistical Area)                              12
+#  5 25260 Hanford-Corcoran, CA (Metropolitan Statistical Area)                    12
+#  6 31080 Los Angeles-Long Beach-Anaheim, CA (Metropolitan Statistical Area)      12
+#  7 31460 Madera, CA (Metropolitan Statistical Area)                              12
+#  8 32900 Merced, CA (Metropolitan Statistical Area)                              12
+#  9 33700 Modesto, CA (Metropolitan Statistical Area)                             12
+# 10 34900 Napa, CA (Metropolitan Statistical Area)                                12
+# 11 37100 Oxnard-Thousand Oaks-Ventura, CA (Metropolitan Statistical Area)        12
+# 12 39820 Redding, CA (Metropolitan Statistical Area)                             12
+# 13 40140 Riverside-San Bernardino-Ontario, CA (Metropolitan Statistical Area)    12
+# 14 40900 Sacramento-Roseville-Folsom, CA (Metropolitan Statistical Area)         12
+# 15 41500 Salinas, CA (Metropolitan Statistical Area)                             12
+# 16 41740 San Diego-Chula Vista-Carlsbad, CA (Metropolitan Statistical Area)      12
+# 17 41860 San Francisco-Oakland-Berkeley, CA (Metropolitan Statistical Area)      12
+# 18 41940 San Jose-Sunnyvale-Santa Clara, CA (Metropolitan Statistical Area)      12
+# 19 42020 San Luis Obispo-Paso Robles, CA (Metropolitan Statistical Area)         12
+# 20 42100 Santa Cruz-Watsonville, CA (Metropolitan Statistical Area)              12
+# 21 42200 Santa Maria-Santa Barbara, CA (Metropolitan Statistical Area)           12
+# 22 42220 Santa Rosa-Petaluma, CA (Metropolitan Statistical Area)                 12
+# 23 44700 Stockton, CA (Metropolitan Statistical Area)                            12
+# 24 46700 Vallejo, CA (Metropolitan Statistical Area)                             12
+# 25 47300 Visalia, CA (Metropolitan Statistical Area)                             12
+# 26 49700 Yuba City, CA (Metropolitan Statistical Area)                           12
 
 
 ```
@@ -285,7 +353,10 @@ f_race_hisp <- function(rac1p, hisp) {
 ```{r acs_vardefs}
 
 acsvars_string <- "serialno, st, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
-worker <- expression(wagp > 0, agep >= 18)
+
+# define the filter definition for a worker so we  have it in only one place
+# worker <- expression(wagp >= 10e3, agep >= 18)  # haven't gotten this to work
+sworker <- "schl > 15 & wagp >= 10e3 & agep >= 18"  # as a string - works with filter(eval(parse(text=sworker))), albeit awkward
 
 create_vars <- function(df){
   # create multiple new variables for df
@@ -298,17 +369,19 @@ create_vars <- function(df){
            agep2=agep^2,
            exp=agep - yoschool - 6,
            exp2=exp^2,
-           lwage=log(rwagp),
+           lrwagp=log(rwagp),
            sex=factor(sex, levels=1:2, labels=c("male", "female")),
+           rachisp=f_race_hisp(rac1p, hisp),
            edattain=case_when(schl <= 15 ~ "notHSgrad",
                             schl %in% 16:19 ~ "HSgrad",
                             schl == 20 ~ "associate",
                             schl == 21 ~ "BA",
                             schl %in% 22:24 ~ "MAplus",
                             TRUE ~ "other"),
+           # put edattain values in desired order
            edattain=factor(
              edattain,
-             levels=c("notHSgrad", "HSgrad", "associate", "BA", "MAplus", "other")),
+             levels=c("HSgrad", "associate", "BA", "MAplus", "notHSgrad", "other")),
            marstat=factor(
              mar,
              levels=1:5,
@@ -318,25 +391,30 @@ create_vars <- function(df){
 # tmp <- df1 %>% mutate(create_vars(.))
 
 
-
 ```
 
 
 ```{r acs_corrections_US}
 # get all state government corrections officers in the US
-sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE occp=3802") # 10 secs
-system.time(df1 <- collect(tbl(db, sql(sqlcmd))))  # 3 secs
-glimpse(df1)
-count(df1, st)
+corr_sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE occp=3802") # 10 secs
+system.time(corr_base <- collect(tbl(db, sql(corr_sqlcmd))))  # 3 secs
+glimpse(corr_base) # 21,989 obs
+count(corr_base, st)
 
-corr_workers <- df1 %>%
-  filter(eval(worker)) %>% 
+corr_workers <- corr_base %>%
+  filter(eval(parse(text=sworker))) %>% 
   filter(cow == 4) %>%  # state government
   left_join(stcodes %>% 
               select(st=stfips, stabbr) %>% 
               mutate(st=as.integer(st)),
             by="st") %>%
-  mutate(create_vars(.)) %>%
+  left_join(sarpp %>% filter(year==2017) %>% 
+              select(stabbr, rpp) %>%
+              mutate(rpp=rpp / 100),
+            by="stabbr") %>%
+  mutate(create_vars(.),
+         rppwagp=rwagp / rpp,  # rwagp is real wage (adjusted for year), rppwagp is region adjusted
+         lrppwagp=log(rppwagp)) %>%  
   group_by(stabbr) %>%
   mutate(n=n()) %>%
   ungroup
@@ -354,7 +432,7 @@ glimpse(corr_workers)
 corr_workers <- corr_workers %>%
   mutate(stabbr2=ifelse(n >= corr_cut, stabbr, "other")) 
 count(corr_workers, edattain)
-count(corr_workers, stabbr2)
+count(corr_workers, stabbr2) # 39 states
 
 
 corr_wages <- corr_workers %>%
@@ -362,6 +440,7 @@ corr_wages <- corr_workers %>%
   summarise(n=n(),
             wtdn=sum(pwgtp),
             rwagp=wtd.mean(rwagp, weights=pwgtp),
+            rppwagp=wtd.mean(rppwagp, weights=pwgtp),
             exp=wtd.mean(exp, weights=pwgtp))
 
 corr_ed <- corr_workers %>%
@@ -385,8 +464,12 @@ corr_summary <- corr_wages %>%
   left_join(corr_ed, by="stabbr2") %>%
   left_join(corr_sex %>% select(stabbr2, male), by="stabbr2") %>%
   mutate(stname=get_stname(stabbr2)) %>%
-  select(stabbr2, stname, n, wtdn, exp, rwagp, male, lehs) %>%
+  select(stabbr2, stname, n, wtdn, exp, rwagp, rppwagp, male, lehs) %>%
   arrange(stname)
+```
+
+
+```{r}
 
 corr_summary
 corr_summary %>%
@@ -396,15 +479,20 @@ corr_summary %>%
   arrange(desc(rwagp))
 
 corr_summary %>%
+  arrange(desc(rppwagp))
+
+corr_summary %>%
   ggplot(aes(male, rwagp, label=stabbr2)) +
   geom_point(colour="blue", size=1) +
   geom_text(colour="blue", size=3) +
   theme_bw()
 
+
 corr_summary %>%
-  ggplot(aes(lehs, rwagp, label=stabbr2)) +
+  ggplot(aes(lehs, rppwagp, label=stabbr2)) +
   geom_point(colour="blue", size=1) +
   geom_text(colour="blue", size=3) +
+  geom_vline(xintercept = median(corr_summary$lehs)) +
   theme_bw()
 
 corr_summary %>%
@@ -414,90 +502,71 @@ corr_summary %>%
   theme_bw()
 
 corr_summary %>%
-  ggplot(aes(exp, rwagp, label=stabbr2)) +
+  ggplot(aes(exp, rppwagp, label=stabbr2)) +
   geom_point(colour="blue", size=1) +
   geom_text(colour="blue", size=3) +
   theme_bw()
-
 
 ```
 
 
 
 ## ACS models of correction worker wages across states
-```{r acs_corr_models}
-
-mod <- lm(lwage ~ sex + stgroup + exp + exp2 + edattain + marstat, data=df3)
-summary(mod)
-
-mod1 <- lm(lwage ~ sex + stabbr + exp + exp2 + edattain + marstat, data=df3)
-summary(mod1)
-
+```{r acs_corr_models, include=TRUE, fig.height=8, fig.width=10}
 # https://cran.r-project.org/web/packages/fixest/fixest.pdf
 # https://cran.r-project.org/web/packages/fixest/vignettes/fixest_walkthrough.html
-# feols(log(Euros) ~ log(dist_km) | Origin + Destination + Product + Year, trade)
-mod2 <- feols(lwage ~ sex + stabbr + exp + exp2 + edattain + marstat, data=df3)
-summary(mod2)
 
-mod3 <- feols(lwage ~ sex + exp + exp2 + edattain + marstat | stabbr20plus, data=df3)
-summary(mod3)
+# count(corr_workers, edattain)
+# count(corr_workers %>% filter(stabbr=="CA"), edattain)
+# count(corr_workers, stabbr2, stabbr)
+femod <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp | stabbr2,
+               data=corr_workers, notes=FALSE)
+# suppress note about dropping edattainother
+summary(femod)
 
-fe <- fixef(mod3)
-summary(fe)
-fe
-fe$stabbr20plus - mean(fe$stabbr20plus)
-tibble(stabbr=names(fe$stabbr20plus), fe=fe$stabbr20plus) %>%
+# check the wage-experience profile for reasonableness
+# tibble(exp=0:40, exp2=exp^2, e1=exp * coef(femod)["exp"], e2=exp2 * coef(femod)["exp2"]) %>%
+#   mutate(earn=e1 + e2) %>%
+#   ggplot(aes(exp, earn)) +
+#   geom_line() +
+#   labs(x="Experience (years)", y="Log earnings") +
+#   ggtitle("Estimated U.S. average earnings-experience profile for correctional officers") +
+#   theme_bw()
+
+fe <- fixef(femod)
+# summary(fe)
+
+cfe <- tibble(stabbr=names(fe$stabbr2), fe=fe$stabbr2) %>%
   mutate(cfe=fe - mean(fe),
-         stname=get_stname(stabbr)) %>%
-  ggplot(aes(y=reorder(stname, cfe), x=cfe * 100)) +
-  geom_col(fill="blue") +
-  theme_minimal() +
-  labs(x="% above or below average state", y=NULL) +
-  ggtitle("Correctional officer salaries relative to U.S. average correctional officer salaries",
-          subtitle = "After controlling for experience, education, and demographic factors") +
-  theme(axis.text.y = element_text(hjust = 0))
-
-df <- tibble(stabbr=names(fe$stabbr20plus), fe=fe$stabbr20plus) %>%
-  mutate(stabbr=ifelse(stabbr=="LT20", "Other", stabbr),
-         cfe=fe - mean(fe),
          stname=get_stname(stabbr),
-         stname=ifelse(stabbr=="Other", "Other", stname))
+         stname=ifelse(stabbr=="other", "-- other states as a group", stname))
 
-statefe_dots <- df %>%
-  filter(stabbr != "Other") %>%
+gtitle <- "State correctional officer salaries relative to those in the average state"
+gsubtitle <- "Adjusted for state price levels, and controlling for experience, education, and demographic characteristics"
+capt1 <- "Source: Author's analysis of U.S. Bureau of the Census, American Community Survey, 2015-2019"
+capt2 <- "Note: States with fewer than 50 observations were grouped togther."
+capt <- paste0(capt1, "\n", capt2)
+statefe_dots <- cfe %>%
+  # filter(stabbr != "Other") %>%
   mutate(grp=ifelse(stabbr=="CA", "CA", "other")) %>%
   ggplot(aes(y=reorder(stname, cfe), x=cfe * 100)) +
   geom_point(aes(colour=grp), size=2) +
   scale_colour_manual(values=c("red", "blue")) +
   theme_minimal() +
-  labs(x="% above or below average state", y=NULL) +
-  ggtitle("State correctional officer salaries relative to those in the average state",
-          subtitle = "After controlling for experience, education, and demographic characteristics") +
+  labs(x="% above or below average state", y=NULL,
+       caption=capt) +
+  ggtitle(label=gtitle, subtitle = gsubtitle) +
   theme(axis.text.y = element_text(hjust = 0)) +
   geom_vline(xintercept = 0) +
-  scale_x_continuous(breaks=seq(-100, 100, 10)) +
-  theme(legend.position = "none")
+  scale_x_continuous(breaks=seq(-100, 100, 5)) +
+  theme(legend.position = "none") +
+  theme(plot.caption = element_text(hjust = 0))
+
 statefe_dots
+
 ggsave(here::here("results", "statefe_dots.png"), 
-       plot=statefe_dots, width=10, height=8, scale=1)
+       plot=statefe_dots, width=10, height=8, scale=1.25)
   
- 
-# ggplot(aes(y=reorder(stname, change), x=change)) +
-plot(fe)
-plot(fe, n=51)
-fe$stabbr
-coef(mod3)
-coeftable(mod3)
-confint(mod3)
-confint(mod3, se="cluster")  # same, because default is stabbr clustering
-etable(mod3)
-fitstat(mod3, type = "r2")
-fitstat(mod3, type = "rmse")
-
-
-mod4 <- feols(lwage ~ sex + exp + exp2 + edattain + marstat | stabbr, weights=df3$pwgtp, data=df3)
-summary(mod4)
-
 ```
 
 

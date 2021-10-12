@@ -1,11 +1,17 @@
+
+
+# 5-year pums ending 2019 ----
+
 # install.packages("arrow", repos = "https://arrow-r-nightly.s3.amazonaws.com")
 
 # links ----
+# https://www2.census.gov/programs-surveys/acs/data/pums/2019/5-Year/  # data landing page
+# https://data.census.gov/mdat/#/search?ds=ACSPUMS5Y2019   # data and documentation
 # https://www.census.gov/programs-surveys/acs/microdata/documentation.html
-
-
+# https://www2.census.gov/programs-surveys/acs/data/pums/2019/5-Year/csv_hus.zip  # data file
 
 # 3802 Correctional officers and jailers 33-3012   # occ code 2018
+
 
 # libraries ----
 library(tidyverse)
@@ -41,93 +47,85 @@ csvdir <- paste0(pumsdir, "csv/")
 fna <- "psam_pusa.csv"
 fnb <- "psam_pusb.csv"
 
-zpath <- paste0(pumsdir, "csv_pus.zip")
+fnha <- "psam_husa.csv"
+fnhb <- "psam_husb.csv"
+fnhc <- "psam_husc.csv"
+fnhc <- "psam_husd.csv"
 
-files <- unzip(zpath, list=TRUE)
-files
+# pzpath <- paste0(pumsdir, "csv_pus.zip")
+# hzpath <- paste0(pumsdir, "csv_hus.zip")
 
-# read and save ----
-# con <- unz(zpath, fna) # read directly from zip file
-cona <- paste0(csvdir, fna)
-dfa <- read_csv(cona, col_types = cols(RT="c", 
-                                      SERIALNO="c",
-                                      NAICSP="c",
-                                      SOCP="c",
-                                      .default = "i"), n_max=-1)
-problems()
-# close(con=con)
-glimpse(dfa)
-cnames <- names(dfa)
-cnames[129]
+# household data 5-year estimates ----
+tblname <- "hus"
+# sasfiles <- c("psam_pusa.sas7bdat", "psam_pusb.sas7bdat", "psam_pusc.sas7bdat", "psam_pusd.sas7bdat")
+csvfiles <- c("psam_husa.csv", "psam_husb.csv", "psam_husc.csv", "psam_husd.csv")
+dir <- r"(E:\data\acs\pums\5year\)"
 
-conb <- paste0(csvdir, fnb)
-dfb <- read_csv(conb, col_types = cols(RT="c", 
-                                      SERIALNO="c",
-                                      NAICSP="c",
-                                      SOCP="c",
-                                      .default = "i"), n_max=-1)
-problems()
+dbdir <- r"(E:\data\acs\pums\sqlite\)"
+dbfn <- "acs2019_5year"
+dbfile <- paste0(dbdir, dbfn, ".sql3")
+# unlink(dbfile) # DANGER!!! delete database file if it exists
 
-df <- bind_rows(dfa, dfb) %>%
-  select(RT:FYOEP) %>%
-  setNames(str_to_lower(names(.)))
-memory()
-rm(dfa, dfb)
-summary(df)
+dbDisconnect(db) # in case it is connected - will throw error if not, but that's ok
+db <- dbConnect(SQLite(), dbname=dbfile)
 
-a <- proc.time()
-write_parquet(df, paste0(pumsdir, "acsp2019.parquet"))
-b <- proc.time()
-b - a
+#.. do a quick test before doing everything! ----
+# tmp <- read_csv(paste0(dir, csvfiles[1]),
+#                 col_types = cols(RT="c",
+#                                  SERIALNO="c",
+#                                  .default = "i"),
+#                 n_max=1000)
+# glimpse(tmp)
 
 
-# get selected variables ----
-df <- read_parquet(paste0(pumsdir, "acsp2019.parquet"),
-                   col_select = c(rt, serialno, sporder, st, adjinc, pwgtp, sex, agep, cow, wagp, occp)) %>%
-  left_join(stcodes %>% select(st=stfips, stabbr) %>% mutate(st=as.integer(st)),
-            by="st")
-
-count(df, st)
-count(df, sex)
-
-corr <- df %>%
-  filter(occp==3802, 
-         agep >= 18,
-         wagp > 0) %>%
-  mutate(lwage=log(wagp),
-         sex=factor(sex, levels=1:2, labels=c("male", "female")),
-         agep2=agep^2)
-count(corr, stabbr)
-summary(corr)
-
-sts <- c("CA", "NY", "FL", "NV", "TX")
-storder <- c("other", sts)
-corr2 <- corr %>%
-  filter(cow==4) %>%
-  mutate(stgroup=ifelse(stabbr %in% sts, stabbr, "other"),
-         stgroup=factor(stgroup, levels=storder))
-glimpse(corr2)
-count(corr2, stgroup, stabbr)
-
-
-mod <- lm(lwage ~ sex + stgroup + agep + agep2, data=corr2)
-summary(mod)
-
-
-corr %>%
-  group_by(stabbr) %>%
-  summarise(n=n(), 
-            wtdn=sum(pwgtp), 
-            wagp=sum(wagp * pwgtp),
-            agep=wtd.mean(agep, weights = pwgtp)) %>%
-  mutate(avg=wagp / wtdn) %>%
-  left_join(spop.a %>% filter(year==2010) %>% select(stabbr, pop=value), by=c("stabbr")) %>%
-  mutate(per100k=wtdn / pop * 1e5) %>%
-  arrange(desc(avg))
+#..now do everything ----
+nmax <- Inf
+for(file in csvfiles){
+  t1 <- proc.time()
+  print(file)
+  print("reading file...")
+  a <- proc.time()
+  tmp <- read_csv(paste0(dir, file),
+                  col_types = cols(RT="c",
+                                   SERIALNO="c",
+                                   .default = "i"),
+                  n_max=nmax)
+  # tmp <- as.data.frame(tmp)
+  tmp <- tmp %>%
+    setNames(str_to_lower(names(.)))
+  b <- proc.time()
+  print(b - a)
   
+  print("writing db table")
+  if(!dbExistsTable(db, tblname)) {
+    # create table and associated indexes the first time through
+    dbWriteTable(db, tblname, tmp, row.names=FALSE)
+  } else {
+    dbWriteTable(db, tblname, tmp, row.names=FALSE, append=TRUE) # indexes will automatically be updated  
+  }  
+  
+  rm(tmp)
+  t2 <- proc.time()
+  print(t2 - t1)
+}
 
-# 5-year estimates ----
-sasfiles <- c("psam_pusa.sas7bdat", "psam_pusb.sas7bdat", "psam_pusc.sas7bdat", "psam_pusd.sas7bdat")
+
+# quick checks
+dbListTables(db)
+dbGetInfo(db)
+
+sqlcmd <- "PRAGMA table_info(hus)" # get info about columns in a table
+dbGetQuery(db, sqlcmd)
+
+dbGetQuery(db, paste0("SELECT COUNT(*) FROM ", "hus")) # much faster than nrow
+
+dbDisconnect(db)
+
+
+
+# person data 5-year estimates ----
+tblname <- "pus"
+# sasfiles <- c("psam_pusa.sas7bdat", "psam_pusb.sas7bdat", "psam_pusc.sas7bdat", "psam_pusd.sas7bdat")
 csvfiles <- c("psam_pusa.csv", "psam_pusb.csv", "psam_pusc.csv", "psam_pusd.csv")
 dir <- r"(E:\data\acs\pums\5year\)"
 
@@ -172,9 +170,24 @@ for(file in csvfiles){
   print(t2 - t1)
 }
 
+# quick checks
+dbListTables(db)
+dbGetInfo(db)
+
+sqlcmd <- "PRAGMA table_info(pus)" # get info about columns in a table
+dbGetQuery(db, sqlcmd)
+
+dbGetQuery(db, paste0("SELECT COUNT(*) FROM ", "pus")) # much faster than nrow
+
 dbDisconnect(db)
 
 
+
+
+
+
+
+# ALL DONE ----
 # check out the data ----
 # get info about the db
 dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
@@ -386,6 +399,87 @@ for(fnsas in sasfiles) {
   print(system.time(saveRDS(dfsas, paste0(acs2013.5year, fnsas, ".rds")))) # 8 mins, 700mb
 }
 
+
+# old parquet ----
+
+# read and save ----
+# con <- unz(zpath, fna) # read directly from zip file
+cona <- paste0(csvdir, fna)
+dfa <- read_csv(cona, col_types = cols(RT="c", 
+                                       SERIALNO="c",
+                                       NAICSP="c",
+                                       SOCP="c",
+                                       .default = "i"), n_max=-1)
+problems()
+# close(con=con)
+glimpse(dfa)
+cnames <- names(dfa)
+cnames[129]
+
+conb <- paste0(csvdir, fnb)
+dfb <- read_csv(conb, col_types = cols(RT="c", 
+                                       SERIALNO="c",
+                                       NAICSP="c",
+                                       SOCP="c",
+                                       .default = "i"), n_max=-1)
+problems()
+
+df <- bind_rows(dfa, dfb) %>%
+  select(RT:FYOEP) %>%
+  setNames(str_to_lower(names(.)))
+memory()
+rm(dfa, dfb)
+summary(df)
+
+a <- proc.time()
+write_parquet(df, paste0(pumsdir, "acsp2019.parquet"))
+b <- proc.time()
+b - a
+
+
+# get selected variables ----
+df <- read_parquet(paste0(pumsdir, "acsp2019.parquet"),
+                   col_select = c(rt, serialno, sporder, st, adjinc, pwgtp, sex, agep, cow, wagp, occp)) %>%
+  left_join(stcodes %>% select(st=stfips, stabbr) %>% mutate(st=as.integer(st)),
+            by="st")
+
+count(df, st)
+count(df, sex)
+
+corr <- df %>%
+  filter(occp==3802, 
+         agep >= 18,
+         wagp > 0) %>%
+  mutate(lwage=log(wagp),
+         sex=factor(sex, levels=1:2, labels=c("male", "female")),
+         agep2=agep^2)
+count(corr, stabbr)
+summary(corr)
+
+sts <- c("CA", "NY", "FL", "NV", "TX")
+storder <- c("other", sts)
+corr2 <- corr %>%
+  filter(cow==4) %>%
+  mutate(stgroup=ifelse(stabbr %in% sts, stabbr, "other"),
+         stgroup=factor(stgroup, levels=storder))
+glimpse(corr2)
+count(corr2, stgroup, stabbr)
+
+
+mod <- lm(lwage ~ sex + stgroup + agep + agep2, data=corr2)
+summary(mod)
+
+
+corr %>%
+  group_by(stabbr) %>%
+  summarise(n=n(), 
+            wtdn=sum(pwgtp), 
+            wagp=sum(wagp * pwgtp),
+            agep=wtd.mean(agep, weights = pwgtp)) %>%
+  mutate(avg=wagp / wtdn) %>%
+  left_join(spop.a %>% filter(year==2010) %>% select(stabbr, pop=value), by=c("stabbr")) %>%
+  mutate(per100k=wtdn / pop * 1e5) %>%
+  arrange(desc(avg))
 
 
 
