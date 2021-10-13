@@ -12,7 +12,7 @@ output:
     toc_float: true
     number_sections: yes
 editor_options:
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
 
@@ -138,6 +138,7 @@ get_stname <- function(stabbr){
 # https://apps.bea.gov/regional/downloadzip.cfm
 # SARPP.zip is states
 # MARPP.zip is metropolitan areas
+# PARPP.zip is metro/non-metro areas within states
 
 
 # https://www.bea.gov/news/2020/real-personal-income-state-and-metropolitan-area-2019
@@ -156,6 +157,9 @@ get_stname <- function(stabbr){
 
 
 ```{r get_rpp}
+# non metro price indexes
+# https://apps.bea.gov/iTable/iTable.cfm?reqid=70&step=1&acrdn=8
+
 # con <- unz(paste0(dir, "/", "SQGDP.zip"), fn) # read directly from zip file
 zname <- "SARPP.zip"
 fn <- "SARPP_STATE_2008_2019.csv"
@@ -189,7 +193,7 @@ glimpse(df)
 marpp <- df %>%
   filter(LineCode=="1") %>%
   pivot_longer(cols=`2008`:`2019`, names_to = "year", values_to = "rpp") %>%
-  mutate(year=as.integer(year), rpp=as.numeric(rpp)) %>%
+  mutate(GeoFIPS=as.integer(GeoFIPS), year=as.integer(year), rpp=as.numeric(rpp)) %>%
   select(fips=GeoFIPS, geoname=GeoName, year, rpp)
 
 # which ones are in California
@@ -250,6 +254,8 @@ ocodes1 <- read_excel(paste0(pumsdir, fnpumscodes),
 ocodes <- ocodes1 %>%
   filter(nchar(occp)==4) %>%
   mutate(occp=as.integer(occp))
+
+# https://www.labormarketinfo.edd.ca.gov/OccGuides/detail.aspx?Soccode=518031&Geography=0601000000
 
 ```
 
@@ -350,9 +356,104 @@ f_race_hisp <- function(rac1p, hisp) {
 ```
 
 
+```{r acs_pumas_notes}
+# https://www.census.gov/programs-surveys/geography/guidance/geo-areas/pumas.html
+# Public Use Microdata Areas (PUMAs) are non-overlapping, statistical geographic
+# areas that partition each state or equivalent entity into geographic areas
+# containing no fewer than 100,000 people each. They cover the entirety of the
+# United States, Puerto Rico, Guam, and the U.S. Virgin Islands. The Census
+# Bureau defines PUMAs for the tabulation and dissemination of decennial census
+# and American Community Survey (ACS) Public Use Microdata Sample (PUMS) data.
+# Additionally, the ACS and Puerto Rico Community Survey use them to disseminate
+# their respective period estimates.
+
+# The delineation of new PUMAs occurs after the completion of the decennial
+# census as part of a program involving the State Data Centers (SDCs). Decennial
+# census population counts and updated census tracts are critical inputs into
+# the delineation process.
+
+# PUMA Character 5 Public use microdata area code (PUMA) based on 2010 Census
+# definition (areas with population of 100,000 or more, use with ST for unique
+# code) 00100..70301 .Public use microdata area codes
+
+# https://www2.census.gov/geo/docs/reference/puma/
+# https://www2.census.gov/geo/docs/reference/puma/2010_PUMA_Names.txt
+
+# https://www.brookings.edu/wp-content/uploads/2018/07/ES_THP_071018_where_work_pays_tech_appendix.pdf
+# IPUMS has created a crosswalk between PUMAs and metropolitan statistical areas
+# (MSAs) that denotes what percent of a given PUMA is in a given MSA. We use
+# this crosswalk to group PUMAs into metropolitan areas and state
+# non-metropolitan areas. An individual is characterized as living in a MSA if
+# they live in a PUMA that is more than 50% in that MSA. They are classified as
+# living in a state nonmetropolitan area if they live in a PUMA that is less
+# than 50% in any metropolitan area. All states except for Delaware, New Jersey,
+# and Rhode Island (and the District of Columbia) have non-metropolitan areas.
+
+# PUMAs to MSAs -- looks like 24-26 MSAs
+# https://usa.ipums.org/usa-action/variables/met2013#description_section
+# https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls
+# https://rdrr.io/github/greaterlouisvilleproject/glptools/man/MSA_PUMA.html
+
+
+# PUMAs to counties -- 58 counties
+# https://www.psc.isr.umich.edu/dis/data/resource/detail/1527.html
+# https://www.psc.isr.umich.edu/dis/workshop/utilities/p2c.html
+# https://www.psc.isr.umich.edu/dis/data/resource/detail/1528.html
+# https://www.psc.isr.umich.edu/dis/workshop/utilities/p2c.html
+# Three additional fields are output:  the five‐digit FIPS county code, county name, and total county population based on the PUMA populations given in the p2c.equ cross‐walk file.
+
+```
+
+```{r acs_pumas_caxwalk}
+# https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls
+pumasdir <- r"(E:\data\acs\pums\pumas\)"
+pfn <- "MSA2013_PUMA2010_crosswalk.xls"
+
+# MSA Code	MSA Title	State FIPS Code	State Name	PUMA Code	PUMA Name	MSA 2010 Population	PUMA 2010 Population	Intersection 2010 Population	Percent MSA Population	Percent PUMA Population
+
+pumamsa1 <- read_excel(paste0(pumasdir, pfn)) 
+names(pumamsa1)
+pumamsa2 <- pumamsa1 %>%
+  setNames(c("msacode", "msaname", "stfips", "stname", "puma", "pumaname",
+             "msapop", "pumapop", "interpop",
+             "pctmsa", "pctpuma")) 
+# do we assign any puma to more than one msa??
+dups <- pumamsa2 %>%
+  group_by(puma, pumaname) %>%
+  mutate(n=n()) %>%
+  ungroup %>%
+  filter(n > 1) %>%
+  arrange(puma, pumaname, desc(interpop)) 
+
+pumamsa3 <- pumamsa2 %>%
+  # for each puma, keep only the msa to which it has the most assigned pop (interpop)
+  # so that we assign 1 and only 1 msa for each puma %>%
+  arrange(stfips, puma, pumaname, desc(interpop)) %>%
+  group_by(puma, pumaname) %>%
+  filter(row_number()==1) %>%
+  ungroup %>%
+  mutate(across(c(stfips, puma, msacode), as.integer))
+
+pumas_caxwalk <- pumamsa3 %>%
+  filter(stfips==6)
+
+# how far off are we?
+pumas_caxwalk %>%
+  group_by(msacode, msaname) %>%
+  summarise(msapop=first(msapop),
+            pumasum=sum(interpop),
+            .groups = "drop") %>%
+  mutate(pdiff=pumasum / msapop -1) %>%
+  arrange(-abs(pdiff)) # almost perfect
+
+```
+
+
+
+
 ```{r acs_vardefs}
 
-acsvars_string <- "serialno, st, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
+acsvars_string <- "serialno, st, puma, powsp, powpuma, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
 
 # define the filter definition for a worker so we  have it in only one place
 # worker <- expression(wagp >= 10e3, agep >= 18)  # haven't gotten this to work
@@ -400,6 +501,9 @@ corr_sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE occp=3802") # 
 system.time(corr_base <- collect(tbl(db, sql(corr_sqlcmd))))  # 3 secs
 glimpse(corr_base) # 21,989 obs
 count(corr_base, st)
+count(corr_base, puma, st)
+count(corr_base %>% filter(st==06), puma) %>% arrange(-n)
+max(corr_base$puma) # 70301
 
 corr_workers <- corr_base %>%
   filter(eval(parse(text=sworker))) %>% 
@@ -568,6 +672,291 @@ ggsave(here::here("results", "statefe_dots.png"),
        plot=statefe_dots, width=10, height=8, scale=1.25)
   
 ```
+
+## Examine California all occupations with ACS
+```{r}
+sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE st=06") # 10 secs
+
+system.time(cadf <- collect(tbl(db, sql(sqlcmd))))  # 4 secs
+glimpse(cadf)
+count(cadf, st) # 1.9m
+count(cadf, puma) %>% arrange(-n)
+
+# cadf %>% 
+#   mutate(year=str_sub(serialno, 1, 4)) %>% 
+#   group_by(year) %>%
+#   summarise(minadjinc=min(adjinc), maxadjinc=max(adjinc))
+#   year  minadjinc maxadjinc
+#   <chr>     <int>     <int>
+# 1 2015    1080470   1080470
+# 2 2016    1073449   1073449
+# 3 2017    1054606   1054606
+# 4 2018    1031452   1031452
+# 5 2019    1010145   1010145
+
+caworkers <- cadf %>%
+  filter(eval(parse(text=sworker))) %>%
+  filter(cow %in% 1:5) %>%
+  # get state abbreviation
+  left_join(stcodes %>% 
+              select(st=stfips, stabbr) %>% 
+              mutate(st=as.integer(st)),
+            by="st") %>%
+  left_join(ocodes, by="occp") %>%
+  # left_join(sarpp %>% filter(year==2017) %>%
+  #             select(stabbr, rpp) %>%
+  #             mutate(rpp=rpp / 100),
+  #           by="stabbr") %>%
+  # get msa (fips) code and msaname that the puma is (mostly) within
+  left_join(pumas_caxwalk %>% 
+              select(puma, pumaname, msacode, msaname),
+            by = "puma") %>%
+  # get regional price parity index
+  left_join(carpp %>% 
+              filter(year==2017) %>% 
+              select(msacode=fips, rpp) %>%
+              mutate(rpp=rpp / 100),
+            by="msacode") %>%
+  mutate(create_vars(.),
+         msacode=ifelse(is.na(msacode), -9999, msacode),
+         msaname=ifelse(is.na(msaname), "nonmatch", msaname),
+         rpp=ifelse(msaname=="nonmatch", 1, rpp),
+         rppwagp=rwagp / rpp,  # rwagp is real wage (adjusted for year), rppwagp is region adjusted
+         lrppwagp=log(rppwagp))
+summary(caworkers)
+
+count(caworkers, occp, occname) %>% arrange(-n)
+count(caworkers, occp, soc, occname) %>% filter(str_sub(soc, 1, 3)=="33-")
+
+```
+
+
+### Where California corrections officers live, vs. other California workers
+```{r}
+# quick look at workers by puma
+count(caworkers, occp, occname)
+places <- caworkers %>%
+  mutate(co=ifelse(occp==3802, "co", "other")) %>%
+  group_by(co, msacode, msaname, rpp) %>%
+  summarise(wtdn=sum(pwgtp), .groups="drop") %>%
+  group_by(co) %>%
+  mutate(pct=wtdn / sum(wtdn)) %>%
+  select(-wtdn) %>%
+  ungroup %>%
+  pivot_wider(names_from = co, values_from = pct) %>%
+  mutate(diff=co - other) %>%
+  arrange(-abs(diff))
+places
+  # arrange(-other)
+# need to collapse by county! Or MSA?
+
+place_plot <- places %>%
+  ggplot(aes(rpp, diff, label=msaname)) +
+  geom_point(colour="blue", size=1) +
+  geom_text(colour="blue", size=2) +
+  geom_vline(xintercept = 1) +
+  geom_hline(yintercept = 0) +
+  labs(x="Relative cost of area", y="Relative number of correctional officers") +
+  theme_bw() +
+  ggtitle("Correctional officers tend to live in less-expensive areas than California workers overall")
+place_plot  
+
+
+
+```  
+
+
+```{r place_table, include=TRUE}
+tabdata <- places %>%
+  mutate(msaname=ifelse(msacode==-9999, " -- Non-metro areas", str_replace(msaname, ", CA", "")),
+         rpp=ifelse(msacode==-9999, 99.8/100, rpp),  # the CA non metro value in 2017
+         rpppct=rpp - 1) %>%
+  select(msacode, msaname, rpppct, co, other) %>%
+  arrange(rpppct) %>%
+  mutate(cotot=cumsum(co), othertot=cumsum(other))
+oddrows <- seq(1, nrow(tabdata), 2)
+
+lowrows <- tabdata %>% 
+  mutate(rownum=row_number()) %>%
+  filter(rpppct < 0)
+
+tab <- tabdata %>%
+  gt() %>%
+  cols_hide(
+    columns = c(msacode)
+  ) %>%
+  tab_header(
+    title = "Cost of Living Where Correctional Officers Live, Relative to Other California Workers",
+    subtitle = "Arranged from lowest-cost to highest-cost area"
+      ) %>%
+  cols_label(msaname="Area of residence",
+             rpppct=md("Price level<br>% above/below<br>national average"),
+             co=md("Correctional<br>officers"),
+             other=md("All other<br>California workers"),
+             cotot=md("Correctional<br>officers"),
+             othertot=md("All other<br>California workers")) %>%
+  tab_spanner(
+    label = "% of workers who live in this area",
+    columns = c(co, other)
+    ) %>%
+  tab_spanner(
+    label = "Cumulative % of workers",
+    columns = c(cotot, othertot)
+    ) %>%
+  fmt_percent(
+    columns = c(rpppct, co, other, cotot, othertot),
+    decimals = 1) %>%
+  # fmt_percent(
+  #   columns = c(rpppct),
+  #   decimals = 4) %>%
+  tab_style(
+    style = list(
+      cell_fill(color = "grey95")
+      ),
+    locations = cells_body(
+      rows=oddrows
+      )
+    ) %>%
+  tab_style(
+    style = list(
+      cell_fill(color = "lightcyan"),
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      columns = c(cotot, othertot),
+      rows = msaname=="Chico"  # (rpppct > -.001) & (rpppct < .001)
+      )
+  ) %>%
+  tab_footnote(
+    footnote = "Area with prices closest to national average.",
+    locations = cells_body(
+      columns = c(msaname),
+      rows = msaname=="Chico"  # (rpppct > -.001) & (rpppct < .001)
+      )
+    ) %>%
+  tab_source_note("Sources: Bureau of the Census, American Community Survey 2015-2019; and Bureau of Economic Analysis, Regional Price Parities.")
+tab
+gtsave(tab, filename="residence_and_prices.html", path=here::here("results"))
+
+```
+
+
+```{r }
+# what are HS jobs?
+jobeduc <- caworkers %>%
+  group_by(soc, occp, occname, edattain) %>%
+  summarise(n=n(),
+            pwgtp=sum(pwgtp),
+            yoschool=median(yoschool, na.rm=TRUE), 
+            .groups="drop") %>%
+  group_by(soc, occp, occname) %>%
+  summarise(n=sum(n),
+            wtdn=sum(pwgtp),
+            lehs=sum(pwgtp[edattain %in% c("notHSgrad", "HSgrad")]),
+            assoc=sum(pwgtp[edattain %in% c("associate")]),
+            ba=sum(pwgtp[edattain %in% c("BA")]),
+            maplus=sum(pwgtp[edattain %in% c("MA+")]),
+            .groups="drop") %>%
+  mutate(across(c(lehs, assoc, ba, maplus), ~ .x / wtdn))
+summary(jobeduc)
+jobeduc %>% filter(str_sub(soc, 1, 3)=="33-")
+# hsjobs <- jobeduc %>%
+#   filter(lehspct >= .55)
+
+caworkers2 <- caworkers %>%
+  left_join(jobeduc %>%
+              select(occp, lehs, assoc, ba, maplus),
+            by="occp")
+
+tmp <- caworkers2 %>%
+  filter(lehs >= .6, lehs <= .7)
+
+tmp %>%
+  filter(!str_detect(occname, coll("supervisor", ignore_case = FALSE))) %>%
+  group_by(soc, occp, occname) %>%
+  summarise(n=n(), wtdn=sum(pwgtp), 
+            across(c(lehs, assoc, ba, maplus), ~ first(.x)), 
+            rwagp=wtd.mean(rwagp, weights = pwgtp)) %>%
+  arrange(-rwagp)
+         
+```
+
+
+```{r acs_ca_model}
+glimpse(caworkers)
+
+hsj <- jobeduc %>%
+  mutate(colehs=lehs[soc=="33-3012"]) %>%
+  filter(lehs >= .6, lehs <= .7, wtdn >= 5000)
+  # filter(lehs >= (colehs - .05), lehs <= (colehs + .05))
+
+# mod1 <- feols(lwage ~ edattain + sex + exp + exp2 + marstat | soc, data=caworkers)
+# summary(mod1)
+
+regdf <- caworkers %>% 
+  filter(soc %in% hsj$soc)
+count(regdf, edattain)
+count(regdf, sex)
+count(regdf, marstat)
+
+mod2 <- feols(lrwagp ~ edattain + exp + exp2 + sex + marstat + rachisp | soc, data=regdf)
+# mod2 <- feols(lwage ~ edattain + exp + exp2 + female + married - 1 | soc, data=regdf)
+summary(mod2)  # default clusters on soc
+# summary(mod2, cluster= ~ soc)
+
+# tmp <- feols(lwage ~ edattain + sex + exp + exp2 + marstat -1 | soc, data=regdf, demeaned = TRUE)
+# fixef(tmp)
+
+# fe <- fixef(mod1)
+fe <- fixef(mod2)
+fe
+# summary(fe)
+# fe$soc["33-3012"]
+# p <- plot(fe)
+# p
+# str(p)
+
+cfe <- tibble(soc=names(fe$soc), fe=fe$soc) %>%
+  left_join(ocodes, by="soc") %>%
+  mutate(cfe=fe - mean(fe)) %>% # centered fixed effects
+  arrange(-cfe) %>%
+  mutate(rank=row_number())
+cfe
+
+cfe %>% filter(soc=="33-3012")
+
+# repeat with msa fixed effects
+mod3 <- feols(lrwagp ~ edattain + exp + exp2 + sex + marstat + rachisp | soc + msaname, data=regdf)
+# mod2 <- feols(lwage ~ edattain + exp + exp2 + female + married - 1 | soc, data=regdf)
+summary(mod3)  # default clusters on soc
+# summary(mod2, cluster= ~ soc)
+
+# tmp <- feols(lwage ~ edattain + sex + exp + exp2 + marstat -1 | soc, data=regdf, demeaned = TRUE)
+# fixef(tmp)
+
+# fe <- fixef(mod1)
+fe3 <- fixef(mod3)
+fe3
+plot(fe3)
+# summary(fe)
+# fe$soc["33-3012"]
+# p <- plot(fe)
+# p
+# str(p)
+
+cfe3 <- tibble(soc=names(fe3$soc), fe=fe3$soc) %>%
+  left_join(ocodes, by="soc") %>%
+  mutate(cfe=fe - mean(fe)) %>% # centered fixed effects
+  arrange(-cfe) %>%
+  mutate(rank=row_number())
+cfe3
+
+
+
+
+```
+
+
 
 
 
@@ -1000,153 +1389,6 @@ dflong %>%
 ```
 
 # Descriptive statistics from the ACS
-
-
-
-```{r get_corrections}
-
-```
-
-
-## Examine California with ACS
-```{r}
-vars <- "serialno, st, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
-sqlcmd <- paste0("SELECT ", vars, " FROM pus WHERE st=06") # 10 secs
-
-system.time(cadf <- collect(tbl(db, sql(sqlcmd))))  # 4 secs
-glimpse(cadf)
-count(cadf, st) # 1.9m
-
-# cadf %>% 
-#   mutate(year=str_sub(serialno, 1, 4)) %>% 
-#   group_by(year) %>%
-#   summarise(minadjinc=min(adjinc), maxadjinc=max(adjinc))
-#   year  minadjinc maxadjinc
-#   <chr>     <int>     <int>
-# 1 2015    1080470   1080470
-# 2 2016    1073449   1073449
-# 3 2017    1054606   1054606
-# 4 2018    1031452   1031452
-# 5 2019    1010145   1010145
-
-caworkers <- cadf %>%
-  filter(wagp > 0, agep >= 18, cow %in% 1:5) %>%
-  left_join(ocodes, by="occp") %>%
-  mutate(year=str_sub(serialno, 1, 4),
-         adjinc=adjinc / 1e6,
-         yoschool=f_yoschool(schl),
-         yoschool=ifelse(yoschool > agep - 6,
-                         agep - 6,
-                         yoschool),
-         rwagp=wagp * adjinc,
-         agep2=agep^2,
-         exp=agep - yoschool - 6,
-         exp2=exp^2,
-         lwage=log(rwagp),
-         sex=factor(sex, levels=1:2, labels=c("male", "female")),
-         edattain=case_when(schl <= 15 ~ "notHSgrad",
-                            schl %in% 16:19 ~ "HSgrad",
-                            schl == 20 ~ "associate",
-                            schl == 21 ~ "BA",
-                            schl %in% 22:24 ~ "MA+",
-                            TRUE ~ "other"),
-         edattain=factor(
-           edattain, 
-           levels=c("notHSgrad", "HSgrad", "associate", "BA", "MA+", "other")),
-         marstat=factor(
-           mar, 
-           levels=1:5, 
-           labels=c("married", "widowed", "divorced", "separated", "neverM")))
-summary(caworkers)
-
-count(caworkers, occp, occname) %>% arrange(-n)
-count(caworkers, occp, soc, occname) %>% filter(str_sub(soc, 1, 3)=="33-")
-
-# what are HS jobs?
-jobeduc <- caworkers %>%
-  group_by(soc, occp, occname, edattain) %>%
-  summarise(n=n(),
-            pwgtp=sum(pwgtp),
-            yoschool=median(yoschool, na.rm=TRUE), 
-            .groups="drop") %>%
-  group_by(soc, occp, occname) %>%
-  summarise(n=sum(n),
-            wtdn=sum(pwgtp),
-            lehs=sum(pwgtp[edattain %in% c("notHSgrad", "HSgrad")]),
-            assoc=sum(pwgtp[edattain %in% c("associate")]),
-            ba=sum(pwgtp[edattain %in% c("BA")]),
-            maplus=sum(pwgtp[edattain %in% c("MA+")]),
-            .groups="drop") %>%
-  mutate(across(c(lehs, assoc, ba, maplus), ~ .x / wtdn))
-summary(jobeduc)
-jobeduc %>% filter(str_sub(soc, 1, 3)=="33-")
-# hsjobs <- jobeduc %>%
-#   filter(lehspct >= .55)
-
-caworkers2 <- caworkers %>%
-  left_join(jobeduc %>%
-              select(occp, lehs, assoc, ba, maplus),
-            by="occp")
-
-tmp <- caworkers2 %>%
-  filter(lehs >= .6, lehs <= .7)
-
-tmp %>%
-  filter(!str_detect(occname, coll("supervisor", ignore_case = FALSE))) %>%
-  group_by(soc, occp, occname) %>%
-  summarise(n=n(), wtdn=sum(pwgtp), 
-            across(c(lehs, assoc, ba, maplus), ~ first(.x)), 
-            rwagp=wtd.mean(rwagp, weights = pwgtp)) %>%
-  arrange(-rwagp)
-         
-```
-
-
-```{r quick_regression}
-glimpse(caworkers)
-
-hsj <- jobeduc %>%
-  mutate(colehs=lehs[soc=="33-3012"]) %>%
-  filter(lehs >= .6, lehs <= .7, wtdn >= 5000)
-  # filter(lehs >= (colehs - .05), lehs <= (colehs + .05))
-
-mod1 <- feols(lwage ~ edattain + sex + exp + exp2 + marstat | soc, data=caworkers)
-summary(mod1)
-
-regdf <- caworkers %>% 
-  filter(soc %in% hsj$soc) %>%
-  mutate(female=sex=="female",
-         married=marstat %in% c("married"))
-count(regdf, edattain)
-count(regdf, sex)
-count(regdf, marstat)
-
-mod2 <- feols(lwage ~ edattain + sex + exp + exp2 + marstat -1 | soc, data=regdf)
-# mod2 <- feols(lwage ~ edattain + exp + exp2 + female + married - 1 | soc, data=regdf)
-summary(mod2)  # default clusters on soc
-# summary(mod2, cluster= ~ soc)
-
-# tmp <- feols(lwage ~ edattain + sex + exp + exp2 + marstat -1 | soc, data=regdf, demeaned = TRUE)
-# fixef(tmp)
-
-# fe <- fixef(mod1)
-fe <- fixef(mod2)
-fe
-summary(fe)
-fe$soc["33-3012"]
-p <- plot(fe)
-p
-str(p)
-
-cfe <- tibble(soc=names(fe$soc), fe=fe$soc) %>%
-  left_join(ocodes, by="soc") %>%
-  mutate(cfe=fe - mean(fe)) %>% # centered fixed effects
-  arrange(-cfe) %>%
-  mutate(rank=row_number())
-
-cfe %>% filter(soc=="33-3012")
-
-```
 
 
 

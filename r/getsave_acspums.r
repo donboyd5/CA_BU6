@@ -176,12 +176,11 @@ dbGetInfo(db)
 
 sqlcmd <- "PRAGMA table_info(pus)" # get info about columns in a table
 dbGetQuery(db, sqlcmd)
+# tmp <- dbGetQuery(db, sqlcmd)
 
 dbGetQuery(db, paste0("SELECT COUNT(*) FROM ", "pus")) # much faster than nrow
 
 dbDisconnect(db)
-
-
 
 
 
