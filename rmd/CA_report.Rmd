@@ -8,11 +8,11 @@ output:
     fig_height: 6
     fig_width: 8
     toc: yes
-    toc_depth: 3
+    toc_depth: 4
     toc_float: true
     number_sections: yes
 editor_options:
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 
@@ -89,6 +89,7 @@ rppdir <- r"(E:\data\BEA_regional_price_parities\)"
 resdir <- r"(E:\data\oesw\oes_research\)"
 
 pumsdir <- r"(E:\data\acs\pums\)"
+pumsdocs <- paste0(pumsdir, r"(5year\documentation\)")
 fnpumscodes <- "ACSPUMS2015_2019CodeLists.xlsx"
 
 sqlitedir <- r"(E:\data\acs\pums\sqlite\)"
@@ -111,13 +112,7 @@ compstates <- c("AZ", "NV", "OR", "WA", "TX", "FL", "NY", "MA")
 ```
 
 
-```{r load_data}
-load(file=here::here("data", "caloes.rdata"), verbose=TRUE)
-load(file=here::here("data", "rpp.rdata"), verbose=TRUE) # max year is 2019 for all
-glimpse(sarpp)
-glimpse(marpp)
-
-```
+<!-- Load previously prepared data -->
 
 
 ```{r functions}
@@ -130,9 +125,18 @@ get_stname <- function(stabbr){
 ```
 
 
-# Data prep
+# Data preparation
 
 ## Regional price measures
+
+This section (results not shown):
+
+* Gets regional price parity indexes (i.e., regional price indexes) from the [Bureau of Economic Analysis](https://apps.bea.gov/regional/downloadzip.cfm) (BEA) for states, Metropolitan Statistical Areas (MSAs), and the metro-nonmetro areas of individual states, for all available years (2008-2019).
+* Parses the data and saves for later use.
+
+We need these data because we want to adjust for regional price differences when comparing correctional officer salaries across states, and when comparing these salaries to private sector salaries in different regions of California.
+
+
 ```{r rpp_info}
 
 # https://apps.bea.gov/regional/downloadzip.cfm
@@ -156,10 +160,11 @@ get_stname <- function(stabbr){
 ```
 
 
-```{r get_rpp}
+```{r get_rpp, eval=FALSE}
 # non metro price indexes
 # https://apps.bea.gov/iTable/iTable.cfm?reqid=70&step=1&acrdn=8
 
+#.. state price indexes ----
 # con <- unz(paste0(dir, "/", "SQGDP.zip"), fn) # read directly from zip file
 zname <- "SARPP.zip"
 fn <- "SARPP_STATE_2008_2019.csv"
@@ -174,8 +179,8 @@ sarpp1 %>% select(stfips, stabbr, GeoName)
   
 sarpp <- sarpp1 %>%
   pivot_longer(cols=`2008`:`2019`, names_to = "year", values_to = "rpp") %>%
-  mutate(year=as.integer(year), rpp=as.numeric(rpp)) %>%
-  select(stabbr, year, rpp)
+  mutate(stfips=as.integer(stfips), year=as.integer(year), rpp=as.numeric(rpp)) %>%
+  select(stabbr, stfips, year, rpp)
 
 sarpp %>%
   filter(stabbr %in% c("US", "CA", "NY", "FL", "TX", "MA")) %>%
@@ -183,7 +188,7 @@ sarpp %>%
   geom_line() +
   geom_point()
 
-# now get metropolitan indexes
+#.. metropolitan area indexes ----
 zname <- "MARPP.zip"
 fn <- "MARPP_MSA_2008_2019.csv"
 con <- unz(paste0(rppdir, zname), fn) # read directly from zip file
@@ -193,12 +198,40 @@ glimpse(df)
 marpp <- df %>%
   filter(LineCode=="1") %>%
   pivot_longer(cols=`2008`:`2019`, names_to = "year", values_to = "rpp") %>%
-  mutate(GeoFIPS=as.integer(GeoFIPS), year=as.integer(year), rpp=as.numeric(rpp)) %>%
-  select(fips=GeoFIPS, geoname=GeoName, year, rpp)
+  mutate(fips=as.integer(GeoFIPS), 
+         year=as.integer(year), 
+         rpp=as.numeric(rpp)) %>%
+  select(fips, geoname=GeoName, year, rpp)
 
-# which ones are in California
+
+#.. metro-nonmetro by state price indexes ----
+zname <- "PARPP.zip"
+fn <- "PARPP_PORT_2008_2019.csv"
+con <- unz(paste0(rppdir, zname), fn) # read directly from zip file
+df <- read_csv(con, col_types = cols(.default = "c"))
+glimpse(df)
+
+parpp <- df %>%
+  filter(LineCode=="1") %>%
+  pivot_longer(cols=`2008`:`2019`, names_to = "year", values_to = "rpp") %>%
+  mutate(type=case_when(str_sub(GeoFIPS, 3, 5)=="998" ~ "metro",
+                        str_sub(GeoFIPS, 3, 5)=="999" ~ "nonmetro",
+                        str_sub(GeoFIPS, 3, 5)=="000" ~ "US",
+                        TRUE ~ "ERROR"),
+         stfips=str_sub(GeoFIPS, 1, 2),
+         year=as.integer(year), 
+         rpp=as.numeric(rpp)) %>%
+  left_join(stcodes %>% select(stfips, stabbr), by = "stfips") %>%
+  mutate(stfips=as.integer(stfips)) %>%
+  select(stfips, stabbr, geoname=GeoName, type, year, rpp)
+
+#.. which ones are in California ----
 carpp <- marpp %>%
-  filter(str_detect(geoname, coll("CA")))
+  filter(str_detect(geoname, coll("CA"))) %>%
+  mutate(stabbr="CA", type="metro") %>%
+  bind_rows(parpp %>%
+              filter(type=="nonmetro", stabbr=="CA") %>%
+              select(stabbr, geoname, type, year, rpp))
 count(carpp, fips, geoname)
 
 save(sarpp, marpp, carpp, file=here::here("data", "rpp.rdata"))
@@ -237,28 +270,188 @@ save(sarpp, marpp, carpp, file=here::here("data", "rpp.rdata"))
 ```
 
 
-## ACS
+## PUMA-MSA crosswalk for California
+
+This section (results not shown):
+
+*   Gets a [crosswalk](https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls) from [IPUMS USA](https://usa.ipums.org/) between:
+  *   Public Use Microdata Areas (PUMAs), relatively small geographic areas defined for and used in the Census Bureau's American Community Survey (ACS) that is rarely used outside of the ACS; (there are 265 PUMAs in California)l and
+  *   Metropolitan Statistical Areas, larger and more-widely known geographic areas; (there are 26 MSAs in California);
+* Parses the data
+* Creates a California subset, and
+* Saves for later use
+
+We need such a crosswalk for two reasons:
+
+*   We only have BEA regional price indexes for MSAs, not for PUMAs. ACS microdata identifies the PUMA for each person in the file, but not their MSA. Thus, we need a way to map the 265 California PUMAs in the ACS to the 26 California MSAs, so that we can get the MSA regional price index for each person in the data.
+*   There are relatively few observations in some PUMAs for some occupational categories. Thus, the geographically larger MSAs can be more useful for substate regional analyses in California than the PUMAs. Plus, MSAs are more familiar to most people than are PUMAs.
+
+
+```{r acs_pumas_notes}
+# https://www.census.gov/programs-surveys/geography/guidance/geo-areas/pumas.html
+# Public Use Microdata Areas (PUMAs) are non-overlapping, statistical geographic
+# areas that partition each state or equivalent entity into geographic areas
+# containing no fewer than 100,000 people each. They cover the entirety of the
+# United States, Puerto Rico, Guam, and the U.S. Virgin Islands. The Census
+# Bureau defines PUMAs for the tabulation and dissemination of decennial census
+# and American Community Survey (ACS) Public Use Microdata Sample (PUMS) data.
+# Additionally, the ACS and Puerto Rico Community Survey use them to disseminate
+# their respective period estimates.
+
+# The delineation of new PUMAs occurs after the completion of the decennial
+# census as part of a program involving the State Data Centers (SDCs). Decennial
+# census population counts and updated census tracts are critical inputs into
+# the delineation process.
+
+# PUMA Character 5 Public use microdata area code (PUMA) based on 2010 Census
+# definition (areas with population of 100,000 or more, use with ST for unique
+# code) 00100..70301 .Public use microdata area codes
+
+# https://www2.census.gov/geo/docs/reference/puma/
+# https://www2.census.gov/geo/docs/reference/puma/2010_PUMA_Names.txt
+
+# https://www.brookings.edu/wp-content/uploads/2018/07/ES_THP_071018_where_work_pays_tech_appendix.pdf
+# IPUMS has created a crosswalk between PUMAs and metropolitan statistical areas
+# (MSAs) that denotes what percent of a given PUMA is in a given MSA. We use
+# this crosswalk to group PUMAs into metropolitan areas and state
+# non-metropolitan areas. An individual is characterized as living in a MSA if
+# they live in a PUMA that is more than 50% in that MSA. They are classified as
+# living in a state nonmetropolitan area if they live in a PUMA that is less
+# than 50% in any metropolitan area. All states except for Delaware, New Jersey,
+# and Rhode Island (and the District of Columbia) have non-metropolitan areas.
+
+# PUMAs to MSAs -- looks like 24-26 MSAs
+# https://usa.ipums.org/usa-action/variables/met2013#description_section
+# https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls
+# https://rdrr.io/github/greaterlouisvilleproject/glptools/man/MSA_PUMA.html
+
+
+# PUMAs to counties -- 58 counties
+# https://www.psc.isr.umich.edu/dis/data/resource/detail/1527.html
+# https://www.psc.isr.umich.edu/dis/workshop/utilities/p2c.html
+# https://www.psc.isr.umich.edu/dis/data/resource/detail/1528.html
+# https://www.psc.isr.umich.edu/dis/workshop/utilities/p2c.html
+# Three additional fields are output:  the five‐digit FIPS county code, county name, and total county population based on the PUMA populations given in the p2c.equ cross‐walk file.
+
+```
+
+
+```{r acs_pumas_caxwalk, eval=FALSE}
+# https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls
+pumasdir <- r"(E:\data\acs\pums\pumas\)"
+pfn <- "MSA2013_PUMA2010_crosswalk.xls"
+
+# MSA Code	MSA Title	State FIPS Code	State Name	PUMA Code	PUMA Name	MSA 2010 Population	PUMA 2010 Population	Intersection 2010 Population	Percent MSA Population	Percent PUMA Population
+
+pumamsa1 <- read_excel(paste0(pumasdir, pfn)) 
+names(pumamsa1)
+pumamsa2 <- pumamsa1 %>%
+  setNames(c("msacode", "msaname", "stfips", "stname", "puma", "pumaname",
+             "msapop", "pumapop", "interpop",
+             "pctmsa", "pctpuma")) 
+# do we assign any puma to more than one msa??
+dups <- pumamsa2 %>%
+  group_by(puma, pumaname) %>%
+  mutate(n=n()) %>%
+  ungroup %>%
+  filter(n > 1) %>%
+  arrange(puma, pumaname, desc(interpop)) 
+
+pumamsa3 <- pumamsa2 %>%
+  # for each puma, keep only the msa to which it has the most assigned pop (interpop)
+  # so that we assign 1 and only 1 msa for each puma %>%
+  arrange(stfips, puma, pumaname, desc(interpop)) %>%
+  group_by(puma, pumaname) %>%
+  filter(row_number()==1) %>%
+  ungroup %>%
+  mutate(across(c(stfips, puma, msacode), as.integer))
+
+pumas_caxwalk <- pumamsa3 %>%
+  filter(stfips==6)
+
+# how far off are we?
+pumas_caxwalk %>%
+  group_by(msacode, msaname) %>%
+  summarise(msapop=first(msapop),
+            pumasum=sum(interpop),
+            .groups = "drop") %>%
+  mutate(pdiff=pumasum / msapop -1) %>%
+  arrange(-abs(pdiff)) # almost perfect
+
+saveRDS(pumas_caxwalk, here::here("data", "pumas_caxwalk.rds"))
+
+```
+
+
+## American Community Survey (ACS) data preparation
+
+This section has two subsections:
+
+*   Preparation of codes needed for use with the ACS
+*   Preparation of the two main ACS data subsets used in the analysis
+
 
 ```{r connect_acsdb}
-dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
+# dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
 db <- dbConnect(SQLite(), dbname=acsdb)
 
 ```
 
 
-```{r acs_occ_codes}
-ocodes1 <- read_excel(paste0(pumsdir, fnpumscodes),
+### Preparation of ACS codes
+
+#### Get a crosswalk of occupation codes
+
+This section (results not shown):
+
+*   Gets a [crosswalk](https://www2.census.gov/programs-surveys/acs/tech_docs/pums/code_lists/ACSPUMS2015_2019CodeLists.xlsx) between occupation codes used by the Bureau of the Census in the ACS and the somewhat more detaled occupation codes maintained by the Bureau of Labor Statistics and also CalHR (California Human Resources)
+*   Parses and saves the data for later use.
+
+```{r acs_occ_codes, eval=FALSE}
+acsocodes1 <- read_excel(paste0(pumsdocs, fnpumscodes),
                       sheet="OCCP & SOCP",
                       range="A11:C881",
                       col_names=c("occp", "soc", "occname"))
-ocodes <- ocodes1 %>%
+acsocodes <- acsocodes1 %>%
   filter(nchar(occp)==4) %>%
   mutate(occp=as.integer(occp))
+
+saveRDS(acsocodes, here::here("data", "acsocodes.rds"))
 
 # https://www.labormarketinfo.edd.ca.gov/OccGuides/detail.aspx?Soccode=518031&Geography=0601000000
 
 ```
 
+#### Define ACS variables to use, and define a "worker"
+
+This section defines variables to pull from the ACS, and what a "worker" is:
+
+*   The 2015-2019 ACS is a sample of approximately 15 million people nationally.
+*   Only some of them are workers (some are children, some are retired, some are prisoners, some are unemployed, etc.)
+*   Currently I define a worker as someone who:
+  *   Is an employee of a private not-for-profit or for-profit entity, or a federal, state, or local government employee. I exclude anyone who is self-employed, or working without pay on a family business or farm, or was unemployed; and
+  *   Graduated from high school or the equivalent (I may revisit this)
+  *   Is at least 18 years old
+  *   Earned at least $10,000
+        
+We need to define a worker for purposes of comparing correctional officer wages to those of other workers. The definition here is based largely on definitions used in academic papers that estimate wage regressions.     
+
+
+```{r acs_worker}
+acsvars_string <- "serialno, st, puma, powsp, powpuma, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
+
+# define the filter definition for a worker so we  have it in only one place
+# worker <- expression(wagp >= 10e3, agep >= 18)  # haven't gotten this to work
+sworker <- "schl > 15 & wagp >= 10e3 & agep >= 18"  # as a string - works with filter(eval(parse(text=sworker))), albeit awkward
+```
+
+
+#### Collapse ACS race and ethnicity
+
+*   Defines how to collapse race and ethnicity codes will 
+
+
+#### Define other ACS codes
 
 ```{r acs_factors}
 
@@ -356,109 +549,11 @@ f_race_hisp <- function(rac1p, hisp) {
 ```
 
 
-```{r acs_pumas_notes}
-# https://www.census.gov/programs-surveys/geography/guidance/geo-areas/pumas.html
-# Public Use Microdata Areas (PUMAs) are non-overlapping, statistical geographic
-# areas that partition each state or equivalent entity into geographic areas
-# containing no fewer than 100,000 people each. They cover the entirety of the
-# United States, Puerto Rico, Guam, and the U.S. Virgin Islands. The Census
-# Bureau defines PUMAs for the tabulation and dissemination of decennial census
-# and American Community Survey (ACS) Public Use Microdata Sample (PUMS) data.
-# Additionally, the ACS and Puerto Rico Community Survey use them to disseminate
-# their respective period estimates.
-
-# The delineation of new PUMAs occurs after the completion of the decennial
-# census as part of a program involving the State Data Centers (SDCs). Decennial
-# census population counts and updated census tracts are critical inputs into
-# the delineation process.
-
-# PUMA Character 5 Public use microdata area code (PUMA) based on 2010 Census
-# definition (areas with population of 100,000 or more, use with ST for unique
-# code) 00100..70301 .Public use microdata area codes
-
-# https://www2.census.gov/geo/docs/reference/puma/
-# https://www2.census.gov/geo/docs/reference/puma/2010_PUMA_Names.txt
-
-# https://www.brookings.edu/wp-content/uploads/2018/07/ES_THP_071018_where_work_pays_tech_appendix.pdf
-# IPUMS has created a crosswalk between PUMAs and metropolitan statistical areas
-# (MSAs) that denotes what percent of a given PUMA is in a given MSA. We use
-# this crosswalk to group PUMAs into metropolitan areas and state
-# non-metropolitan areas. An individual is characterized as living in a MSA if
-# they live in a PUMA that is more than 50% in that MSA. They are classified as
-# living in a state nonmetropolitan area if they live in a PUMA that is less
-# than 50% in any metropolitan area. All states except for Delaware, New Jersey,
-# and Rhode Island (and the District of Columbia) have non-metropolitan areas.
-
-# PUMAs to MSAs -- looks like 24-26 MSAs
-# https://usa.ipums.org/usa-action/variables/met2013#description_section
-# https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls
-# https://rdrr.io/github/greaterlouisvilleproject/glptools/man/MSA_PUMA.html
-
-
-# PUMAs to counties -- 58 counties
-# https://www.psc.isr.umich.edu/dis/data/resource/detail/1527.html
-# https://www.psc.isr.umich.edu/dis/workshop/utilities/p2c.html
-# https://www.psc.isr.umich.edu/dis/data/resource/detail/1528.html
-# https://www.psc.isr.umich.edu/dis/workshop/utilities/p2c.html
-# Three additional fields are output:  the five‐digit FIPS county code, county name, and total county population based on the PUMA populations given in the p2c.equ cross‐walk file.
-
-```
-
-```{r acs_pumas_caxwalk}
-# https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls
-pumasdir <- r"(E:\data\acs\pums\pumas\)"
-pfn <- "MSA2013_PUMA2010_crosswalk.xls"
-
-# MSA Code	MSA Title	State FIPS Code	State Name	PUMA Code	PUMA Name	MSA 2010 Population	PUMA 2010 Population	Intersection 2010 Population	Percent MSA Population	Percent PUMA Population
-
-pumamsa1 <- read_excel(paste0(pumasdir, pfn)) 
-names(pumamsa1)
-pumamsa2 <- pumamsa1 %>%
-  setNames(c("msacode", "msaname", "stfips", "stname", "puma", "pumaname",
-             "msapop", "pumapop", "interpop",
-             "pctmsa", "pctpuma")) 
-# do we assign any puma to more than one msa??
-dups <- pumamsa2 %>%
-  group_by(puma, pumaname) %>%
-  mutate(n=n()) %>%
-  ungroup %>%
-  filter(n > 1) %>%
-  arrange(puma, pumaname, desc(interpop)) 
-
-pumamsa3 <- pumamsa2 %>%
-  # for each puma, keep only the msa to which it has the most assigned pop (interpop)
-  # so that we assign 1 and only 1 msa for each puma %>%
-  arrange(stfips, puma, pumaname, desc(interpop)) %>%
-  group_by(puma, pumaname) %>%
-  filter(row_number()==1) %>%
-  ungroup %>%
-  mutate(across(c(stfips, puma, msacode), as.integer))
-
-pumas_caxwalk <- pumamsa3 %>%
-  filter(stfips==6)
-
-# how far off are we?
-pumas_caxwalk %>%
-  group_by(msacode, msaname) %>%
-  summarise(msapop=first(msapop),
-            pumasum=sum(interpop),
-            .groups = "drop") %>%
-  mutate(pdiff=pumasum / msapop -1) %>%
-  arrange(-abs(pdiff)) # almost perfect
-
-```
-
+#### Define key variables derived from variables on the ACS
 
 
 
 ```{r acs_vardefs}
-
-acsvars_string <- "serialno, st, puma, powsp, powpuma, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
-
-# define the filter definition for a worker so we  have it in only one place
-# worker <- expression(wagp >= 10e3, agep >= 18)  # haven't gotten this to work
-sworker <- "schl > 15 & wagp >= 10e3 & agep >= 18"  # as a string - works with filter(eval(parse(text=sworker))), albeit awkward
-
 create_vars <- function(df){
   # create multiple new variables for df
   # df has acs variables
@@ -495,7 +590,15 @@ create_vars <- function(df){
 ```
 
 
-```{r acs_corrections_US}
+### Create ACS data subsets to be used in the analysis
+
+#### Create an ACS data subset with all sampled state correctional workers in the U.S.
+
+
+This subset has approximately 9,800 observations.
+
+
+```{r acs_corrections_US, eval=FALSE}
 # get all state government corrections officers in the US
 corr_sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE occp=3802") # 10 secs
 system.time(corr_base <- collect(tbl(db, sql(corr_sqlcmd))))  # 3 secs
@@ -525,13 +628,107 @@ corr_workers <- corr_base %>%
 
 summary(corr_workers)
 
+saveRDS(corr_workers, here::here("data", "corr_workers.rds"))
+
+```
+
+
+#### Create an ACS data subset with all sampled workers in California
+
+
+This subset has approximately 640,000 observations.
+
+
+```{r acs_caworkers, eval=FALSE}
+sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE st=06") # 10 secs
+
+system.time(cadf <- collect(tbl(db, sql(sqlcmd))))  # 4 secs
+glimpse(cadf)
+count(cadf, st) # 1.9m
+count(cadf, puma) %>% arrange(-n)
+
+# cadf %>% 
+#   mutate(year=str_sub(serialno, 1, 4)) %>% 
+#   group_by(year) %>%
+#   summarise(minadjinc=min(adjinc), maxadjinc=max(adjinc))
+#   year  minadjinc maxadjinc
+#   <chr>     <int>     <int>
+# 1 2015    1080470   1080470
+# 2 2016    1073449   1073449
+# 3 2017    1054606   1054606
+# 4 2018    1031452   1031452
+# 5 2019    1010145   1010145
+
+caworkers <- cadf %>%
+  filter(eval(parse(text=sworker))) %>%
+  filter(cow %in% 1:5) %>%
+  # get state abbreviation
+  left_join(stcodes %>% 
+              select(st=stfips, stabbr) %>% 
+              mutate(st=as.integer(st)),
+            by="st") %>%
+  left_join(acsocodes, by="occp") %>%
+  # left_join(sarpp %>% filter(year==2017) %>%
+  #             select(stabbr, rpp) %>%
+  #             mutate(rpp=rpp / 100),
+  #           by="stabbr") %>%
+  # get msa (fips) code and msaname that the puma is (mostly) within
+  left_join(pumas_caxwalk %>% 
+              select(puma, pumaname, msacode, msaname),
+            by = "puma") %>%
+  # get regional price parity index
+  left_join(carpp %>% 
+              filter(year==2017) %>% 
+              select(msacode=fips, rpp) %>%
+              mutate(rpp=rpp / 100),
+            by="msacode") %>%
+  mutate(create_vars(.),
+         msacode=ifelse(is.na(msacode), -9999, msacode),
+         msaname=ifelse(is.na(msaname), "nonmatch", msaname),
+         rpp=ifelse(msaname=="nonmatch", 1, rpp),
+         rppwagp=rwagp / rpp,  # rwagp is real wage (adjusted for year), rppwagp is region adjusted
+         lrppwagp=log(rppwagp))
+summary(caworkers)
+
+count(caworkers, occp, occname) %>% arrange(-n)
+count(caworkers, occp, soc, occname) %>% filter(str_sub(soc, 1, 3)=="33-")
+
+saveRDS(caworkers, here::here("data", "caworkers.rds"))
+
+```
+
+
+
+
+# Data analysis
+
+
+```{r load_data}
+# load previously prepared data
+load(file=here::here("data", "caloes.rdata"), verbose=TRUE)
+load(file=here::here("data", "rpp.rdata"), verbose=TRUE) # max year is 2019 for all
+acsocodes <- readRDS(here::here("data", "acsocodes.rds"))
+pumas_caxwalk <- readRDS(here::here("data", "pumas_caxwalk.rds"))
+
+corr_workers <- readRDS(here::here("data", "corr_workers.rds"))
+caworkers <- readRDS(here::here("data", "caworkers.rds"))
+
+# glimpse(sarpp)
+# glimpse(marpp)
+
 ```
 
 
 ## ACS descriptive statistics of correction worker wages across states
-```{r}
-corr_cut <- 50
 
+```{r corr_cutoff}
+# number of observations needed in a state
+corr_cut <- 50
+```
+
+
+
+```{r}
 glimpse(corr_workers)
 corr_workers <- corr_workers %>%
   mutate(stabbr2=ifelse(n >= corr_cut, stabbr, "other")) 
@@ -674,61 +871,7 @@ ggsave(here::here("results", "statefe_dots.png"),
 ```
 
 ## Examine California all occupations with ACS
-```{r}
-sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE st=06") # 10 secs
 
-system.time(cadf <- collect(tbl(db, sql(sqlcmd))))  # 4 secs
-glimpse(cadf)
-count(cadf, st) # 1.9m
-count(cadf, puma) %>% arrange(-n)
-
-# cadf %>% 
-#   mutate(year=str_sub(serialno, 1, 4)) %>% 
-#   group_by(year) %>%
-#   summarise(minadjinc=min(adjinc), maxadjinc=max(adjinc))
-#   year  minadjinc maxadjinc
-#   <chr>     <int>     <int>
-# 1 2015    1080470   1080470
-# 2 2016    1073449   1073449
-# 3 2017    1054606   1054606
-# 4 2018    1031452   1031452
-# 5 2019    1010145   1010145
-
-caworkers <- cadf %>%
-  filter(eval(parse(text=sworker))) %>%
-  filter(cow %in% 1:5) %>%
-  # get state abbreviation
-  left_join(stcodes %>% 
-              select(st=stfips, stabbr) %>% 
-              mutate(st=as.integer(st)),
-            by="st") %>%
-  left_join(ocodes, by="occp") %>%
-  # left_join(sarpp %>% filter(year==2017) %>%
-  #             select(stabbr, rpp) %>%
-  #             mutate(rpp=rpp / 100),
-  #           by="stabbr") %>%
-  # get msa (fips) code and msaname that the puma is (mostly) within
-  left_join(pumas_caxwalk %>% 
-              select(puma, pumaname, msacode, msaname),
-            by = "puma") %>%
-  # get regional price parity index
-  left_join(carpp %>% 
-              filter(year==2017) %>% 
-              select(msacode=fips, rpp) %>%
-              mutate(rpp=rpp / 100),
-            by="msacode") %>%
-  mutate(create_vars(.),
-         msacode=ifelse(is.na(msacode), -9999, msacode),
-         msaname=ifelse(is.na(msaname), "nonmatch", msaname),
-         rpp=ifelse(msaname=="nonmatch", 1, rpp),
-         rppwagp=rwagp / rpp,  # rwagp is real wage (adjusted for year), rppwagp is region adjusted
-         lrppwagp=log(rppwagp))
-summary(caworkers)
-
-count(caworkers, occp, occname) %>% arrange(-n)
-count(caworkers, occp, soc, occname) %>% filter(str_sub(soc, 1, 3)=="33-")
-
-```
 
 
 ### Where California corrections officers live, vs. other California workers
