@@ -112,8 +112,6 @@ compstates <- c("AZ", "NV", "OR", "WA", "TX", "FL", "NY", "MA")
 ```
 
 
-<!-- Load previously prepared data -->
-
 
 ```{r functions}
 get_stname <- function(stabbr){
@@ -127,9 +125,14 @@ get_stname <- function(stabbr){
 
 # Data preparation
 
+There is no data analysis in this section. It serves as my documentation, and will help me in writing the report.
+
+It may be of interest to you.
+
+
 ## Regional price measures
 
-This section (results not shown):
+This section:
 
 * Gets regional price parity indexes (i.e., regional price indexes) from the [Bureau of Economic Analysis](https://apps.bea.gov/regional/downloadzip.cfm) (BEA) for states, Metropolitan Statistical Areas (MSAs), and the metro-nonmetro areas of individual states, for all available years (2008-2019).
 * Parses the data and saves for later use.
@@ -272,7 +275,7 @@ save(sarpp, marpp, carpp, file=here::here("data", "rpp.rdata"))
 
 ## PUMA-MSA crosswalk for California
 
-This section (results not shown):
+This section:
 
 *   Gets a [crosswalk](https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls) from [IPUMS USA](https://usa.ipums.org/) between:
   *   Public Use Microdata Areas (PUMAs), relatively small geographic areas defined for and used in the Census Bureau's American Community Survey (ACS) that is rarely used outside of the ACS; (there are 265 PUMAs in California)l and
@@ -388,24 +391,47 @@ saveRDS(pumas_caxwalk, here::here("data", "pumas_caxwalk.rds"))
 This section has two subsections:
 
 *   Preparation of codes needed for use with the ACS
-*   Preparation of the two main ACS data subsets used in the analysis
-
-
-```{r connect_acsdb}
-# dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
-db <- dbConnect(SQLite(), dbname=acsdb)
-
-```
+*   Preparation of the two main ACS data subsets used in the analysis, extracting relevant information from an SQLITE database of the ACS. This program does not get the full ACS - I did that in a separate program that downloaded the ACS and created the SQLITE database. That was done separately because of the size of the ACS.
 
 
 ### Preparation of ACS codes
 
+#### Define a "worker"
+
+This section defines variables to pull from the ACS, and what a "worker" is:
+
+*   The 2015-2019 ACS is a sample of approximately 15 million people nationally.
+*   Only some of them are workers (some are children, some are retired, some are prisoners, some are unemployed, etc.)
+*   Currently I define a worker as someone who:
+  *   Is an employee of a private not-for-profit or for-profit entity, or a federal, state, or local government employee. I exclude anyone who is self-employed, or working without pay on a family business or farm, or was unemployed; and
+  *   Is at least 18 years old
+  *   Earned at least $10,000
+        
+We need to define a worker for purposes of comparing correctional officer wages to those of other workers. The definition here is based largely on definitions used in academic papers that estimate wage regressions.     
+
+
+```{r acs_worker}
+acsvars_string <- "serialno, st, puma, powsp, powpuma, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
+
+# define the filter definition for a worker so we  have it in only one place
+# worker <- expression(wagp >= 10e3, agep >= 18)  # haven't gotten this to work
+# sworker <- "schl > 15 & wagp >= 10e3 & agep >= 18"  # as a string - works with filter(eval(parse(text=sworker))), albeit awkward
+sworker <- "wagp >= 10e3 & agep >= 18"  # as a string - works with
+
+save(acsvars_string, sworker, file=here::here("data", "acs_constants.rdata"))
+
+```
+
+
 #### Get a crosswalk of occupation codes
 
-This section (results not shown):
+This section:
 
 *   Gets a [crosswalk](https://www2.census.gov/programs-surveys/acs/tech_docs/pums/code_lists/ACSPUMS2015_2019CodeLists.xlsx) between occupation codes used by the Bureau of the Census in the ACS and the somewhat more detaled occupation codes maintained by the Bureau of Labor Statistics and also CalHR (California Human Resources)
 *   Parses and saves the data for later use.
+
+We need this crosswalk so that we can (a) identify correctional officers and people in other occupations, and (b) collapse identify selected occupations that are similar in some way to correctional officers.
+
 
 ```{r acs_occ_codes, eval=FALSE}
 acsocodes1 <- read_excel(paste0(pumsdocs, fnpumscodes),
@@ -422,36 +448,16 @@ saveRDS(acsocodes, here::here("data", "acsocodes.rds"))
 
 ```
 
-#### Define ACS variables to use, and define a "worker"
-
-This section defines variables to pull from the ACS, and what a "worker" is:
-
-*   The 2015-2019 ACS is a sample of approximately 15 million people nationally.
-*   Only some of them are workers (some are children, some are retired, some are prisoners, some are unemployed, etc.)
-*   Currently I define a worker as someone who:
-  *   Is an employee of a private not-for-profit or for-profit entity, or a federal, state, or local government employee. I exclude anyone who is self-employed, or working without pay on a family business or farm, or was unemployed; and
-  *   Graduated from high school or the equivalent (I may revisit this)
-  *   Is at least 18 years old
-  *   Earned at least $10,000
-        
-We need to define a worker for purposes of comparing correctional officer wages to those of other workers. The definition here is based largely on definitions used in academic papers that estimate wage regressions.     
-
-
-```{r acs_worker}
-acsvars_string <- "serialno, st, puma, powsp, powpuma, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
-
-# define the filter definition for a worker so we  have it in only one place
-# worker <- expression(wagp >= 10e3, agep >= 18)  # haven't gotten this to work
-sworker <- "schl > 15 & wagp >= 10e3 & agep >= 18"  # as a string - works with filter(eval(parse(text=sworker))), albeit awkward
-```
-
-
-#### Collapse ACS race and ethnicity
-
-*   Defines how to collapse race and ethnicity codes will 
-
 
 #### Define other ACS codes
+
+This section has functions that develop variables that will serve as controls in regression equations, generally by collapsing detailed ACS variables into more-aggregated categories. For example, it:
+
+*   Race and ethnicity variables are collapsed from 9 race categories by multiple ethnic categories into a single variable with 5 categories
+*   Years of schooling is calculated
+*   Educational attainment is collapsed into 
+*   Work experience is calculated as age minus years of schooling minus 6
+
 
 ```{r acs_factors}
 
@@ -534,6 +540,22 @@ f_yoschool <- function(schl, agep){
 }
 
 
+f_edattain <- function(schl){
+  edattain <- case_when(schl <= 15 ~ "notHSgrad",
+                        schl %in% 16:19 ~ "HSgrad",
+                        schl == 20 ~ "associate",
+                        schl == 21 ~ "BA",
+                        schl %in% 22:24 ~ "MAplus",
+                        TRUE ~ "other")
+    # put edattain values in desired order
+    edattain <- factor(
+             edattain,
+             levels=c("HSgrad", "associate", "BA", "MAplus", "notHSgrad", "other"))
+    edattain
+}
+# f_edattain(11)
+
+
 f_race_hisp <- function(rac1p, hisp) {
   # hisp==1 is NOT hispanic
   y <- ifelse(hisp==1, rac1p, 0)
@@ -546,15 +568,8 @@ f_race_hisp <- function(rac1p, hisp) {
   return(y)
 }
 
-```
 
-
-#### Define key variables derived from variables on the ACS
-
-
-
-```{r acs_vardefs}
-create_vars <- function(df){
+f_create_vars <- function(df){
   # create multiple new variables for df
   # df has acs variables
   df %>%
@@ -568,16 +583,7 @@ create_vars <- function(df){
            lrwagp=log(rwagp),
            sex=factor(sex, levels=1:2, labels=c("male", "female")),
            rachisp=f_race_hisp(rac1p, hisp),
-           edattain=case_when(schl <= 15 ~ "notHSgrad",
-                            schl %in% 16:19 ~ "HSgrad",
-                            schl == 20 ~ "associate",
-                            schl == 21 ~ "BA",
-                            schl %in% 22:24 ~ "MAplus",
-                            TRUE ~ "other"),
-           # put edattain values in desired order
-           edattain=factor(
-             edattain,
-             levels=c("HSgrad", "associate", "BA", "MAplus", "notHSgrad", "other")),
+           edattain=f_edattain(schl),
            marstat=factor(
              mar,
              levels=1:5,
@@ -585,17 +591,30 @@ create_vars <- function(df){
   }
 
 # tmp <- df1 %>% mutate(create_vars(.))
-
+save(f_yoschool, f_edattain, f_race_hisp, f_create_vars, file=here::here("data", "acs_functions.rdata"))
 
 ```
 
 
 ### Create ACS data subsets to be used in the analysis
 
-#### Create an ACS data subset with all sampled state correctional workers in the U.S.
+
+```{r connect_acsdb}
+
+load(file=here::here("data", "acs_constants.rdata"), verbose=TRUE)
+load(file=here::here("data", "acs_functions.rdata"), verbose=TRUE)
+
+# dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
+db <- dbConnect(SQLite(), dbname=acsdb)
+
+```
+
+
+#### Create subset representing all state correctional workers in the U.S.
 
 
 This subset has approximately 9,800 observations.
+
 
 
 ```{r acs_corrections_US, eval=FALSE}
@@ -611,16 +630,16 @@ max(corr_base$puma) # 70301
 corr_workers <- corr_base %>%
   filter(eval(parse(text=sworker))) %>% 
   filter(cow == 4) %>%  # state government
+  mutate(f_create_vars(.)) %>%
   left_join(stcodes %>% 
               select(st=stfips, stabbr) %>% 
               mutate(st=as.integer(st)),
             by="st") %>%
-  left_join(sarpp %>% filter(year==2017) %>% 
-              select(stabbr, rpp) %>%
+  left_join(sarpp %>%
+              select(stabbr, year, rpp) %>%
               mutate(rpp=rpp / 100),
-            by="stabbr") %>%
-  mutate(create_vars(.),
-         rppwagp=rwagp / rpp,  # rwagp is real wage (adjusted for year), rppwagp is region adjusted
+            by=c("stabbr", "year")) %>%
+  mutate(rppwagp=rwagp / rpp,  # rwagp is real wage (adjusted for year), rppwagp is region adjusted
          lrppwagp=log(rppwagp)) %>%  
   group_by(stabbr) %>%
   mutate(n=n()) %>%
@@ -633,7 +652,7 @@ saveRDS(corr_workers, here::here("data", "corr_workers.rds"))
 ```
 
 
-#### Create an ACS data subset with all sampled workers in California
+#### Create subset representing all sampled workers in California
 
 
 This subset has approximately 640,000 observations.
@@ -662,32 +681,35 @@ count(cadf, puma) %>% arrange(-n)
 caworkers <- cadf %>%
   filter(eval(parse(text=sworker))) %>%
   filter(cow %in% 1:5) %>%
+  mutate(f_create_vars(.)) %>%
   # get state abbreviation
   left_join(stcodes %>% 
               select(st=stfips, stabbr) %>% 
               mutate(st=as.integer(st)),
             by="st") %>%
   left_join(acsocodes, by="occp") %>%
-  # left_join(sarpp %>% filter(year==2017) %>%
-  #             select(stabbr, rpp) %>%
-  #             mutate(rpp=rpp / 100),
-  #           by="stabbr") %>%
   # get msa (fips) code and msaname that the puma is (mostly) within
   left_join(pumas_caxwalk %>% 
               select(puma, pumaname, msacode, msaname),
             by = "puma") %>%
   # get regional price parity index
   left_join(carpp %>% 
-              filter(year==2017) %>% 
-              select(msacode=fips, rpp) %>%
-              mutate(rpp=rpp / 100),
-            by="msacode") %>%
-  mutate(create_vars(.),
-         msacode=ifelse(is.na(msacode), -9999, msacode),
-         msaname=ifelse(is.na(msaname), "nonmatch", msaname),
-         rpp=ifelse(msaname=="nonmatch", 1, rpp),
+              filter(type=="metro") %>%
+              select(msacode=fips, year, rpp),
+            by=c("msacode", "year")) %>%
+  mutate(msacode=ifelse(is.na(msacode), -9999, msacode),
+         msaname=ifelse(is.na(msaname), "nonmetro", msaname),
+         type=ifelse(msacode==-9999, "nonmetro", "metro")) %>%
+  # merge again to get regional price parity for the nonmetro areas
+  left_join(carpp %>% 
+              filter(type=="nonmetro") %>%
+              select(type, year, rpp_nonmetro=rpp),
+            by=c("type", "year")) %>%
+  mutate(rpp=ifelse(type=="nonmetro", rpp_nonmetro, rpp),
+         rpp=rpp / 100,
          rppwagp=rwagp / rpp,  # rwagp is real wage (adjusted for year), rppwagp is region adjusted
-         lrppwagp=log(rppwagp))
+         lrppwagp=log(rppwagp)) %>%
+  select(-rpp_nonmetro)
 summary(caworkers)
 
 count(caworkers, occp, occname) %>% arrange(-n)
@@ -705,16 +727,17 @@ saveRDS(caworkers, here::here("data", "caworkers.rds"))
 
 ```{r load_data}
 # load previously prepared data
+
+load(file=here::here("data", "acs_constants.rdata"), verbose=TRUE)
+load(file=here::here("data", "acs_functions.rdata"), verbose=TRUE)
 load(file=here::here("data", "caloes.rdata"), verbose=TRUE)
 load(file=here::here("data", "rpp.rdata"), verbose=TRUE) # max year is 2019 for all
 acsocodes <- readRDS(here::here("data", "acsocodes.rds"))
 pumas_caxwalk <- readRDS(here::here("data", "pumas_caxwalk.rds"))
 
+# the main data files
 corr_workers <- readRDS(here::here("data", "corr_workers.rds"))
 caworkers <- readRDS(here::here("data", "caworkers.rds"))
-
-# glimpse(sarpp)
-# glimpse(marpp)
 
 ```
 
@@ -725,7 +748,6 @@ caworkers <- readRDS(here::here("data", "caworkers.rds"))
 # number of observations needed in a state
 corr_cut <- 50
 ```
-
 
 
 ```{r}
@@ -871,8 +893,6 @@ ggsave(here::here("results", "statefe_dots.png"),
 ```
 
 ## Examine California all occupations with ACS
-
-
 
 ### Where California corrections officers live, vs. other California workers
 ```{r}
