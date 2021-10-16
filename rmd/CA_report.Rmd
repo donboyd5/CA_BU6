@@ -123,6 +123,7 @@ obs_cutoff <- 50
 
 # graph theme items
 legend_none <- theme(legend.position = "None")
+legend_notitle <- theme(legend.title = element_blank())
 caption_left <- theme(plot.caption = element_text(hjust = 0))
 
 ```
@@ -149,7 +150,7 @@ This report has a section on data preparation and a section on data analysis. Th
 
 # Data preparation
 
-Note to self: Only run when data or methods change.
+NOTE to self: Only run when data or methods change.
 
 ```{r functions_misc, eval=FALSE}
 get_stname <- function(stabbr){
@@ -740,7 +741,7 @@ We need to define a worker for purposes of comparing correctional officer wages 
 
 
 ```{r acs_worker}
-acsvars_string <- "serialno, st, puma, powsp, powpuma, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp"
+acsvars_string <- "serialno, st, puma, powsp, powpuma, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp, naicsp"
 
 # define the filter definition for a worker so we  have it in only one place
 # worker <- expression(wagp >= 10e3, agep >= 18)  # haven't gotten this to work
@@ -1135,6 +1136,10 @@ job_cluster <- readRDS(here::here("data", "job_cluster.rds"))
 wpirates <- readRDS(here::here("data", "wpirates.rds"))
 
 # OESW
+# All states, govt
+oesres_sec99 <- readRDS(paste0(resdir, "oesres_sec99.rds"))
+
+# California files
 caledd_oesw <- readRDS(here::here("data", "caledd_oesw.rds"))
 load(file=here::here("data", "caloes.rdata"), verbose=TRUE)
 
@@ -1146,17 +1151,34 @@ cajobeduc <- readRDS(here::here("data", "cajobeduc.rds"))
 
 ```
 
-# Wages and salaries of correctional officers
+# Wages of correctional officers
 
-## Comparisons of correctional officers' wages and salaries to other states
+## Comparisons of correctional officers' wages to other states
 
 ### Descriptive analysis
 
 We'd expect wages to be higher when education or experience is greater. Looking at these two workforce characteristics in isolation can give us a sense of whether they will make a lot of difference when we run models that control for education and experience.
 
 
-```{r}
+```{r states_dataprep}
 # data prep
+# OES -- construct a U.S. record
+corr_oessts <- oesres_sec99 %>%
+  filter(str_detect(naics_title, "State Government"), occ=="33-3012", stabbr %in% state.abb) %>%
+  select(stabbr, year, occ, occname, wage=a_mean, emp=tot_emp) %>%
+  mutate(caldum=stabbr=="CA")
+
+corr_oesus50 <- corr_oessts %>%
+  group_by(year, occ, occname) %>%
+  summarise(stabbr="US",
+            n=n(),
+            wage=wtd.mean(wage, weights = emp, na.rm=TRUE),
+            emp=sum(emp, na.rm=TRUE))
+
+corr_oes <- bind_rows(corr_oessts, corr_oesus50)
+
+
+# ACS
 # obs_cutoff number of observations needed in a state or other category
 glimpse(corr_workers)
 corr_workers_cut <- corr_workers %>%
@@ -1210,6 +1232,150 @@ corr_summary <- corr_wages %>%
          dumca=stabbr2=="CA") %>%
   select(stabbr2, stname, dumca, n, wtdn, exp, rwagp, rppwagp, male, ltassoc) %>%
   arrange(stname)
+
+```
+
+#### Miscellaneous
+
+```{r include=FALSE}
+# Number of correction officers per capita and average wage
+pdata <- corr_oes %>%
+  filter(year==2020) %>%
+  left_join(spop.a %>%
+              filter(year==2020) %>%
+              select(stabbr, pop=value),
+            by=c("stabbr")) %>%
+  mutate(epop100k=emp / (pop / 100e3))
+
+pdata %>%
+  ggplot(aes(epop100k, wage, label=stabbr)) +
+  geom_point() +
+  geom_text()
+
+```
+
+
+#### Wages
+
+Here we look at raw wages, without adjusting for price differences across states or controlling for differences across workers such as educational attainment, as this is the starting point and is what other people will look at. (Because this does not adjust for cost-of-living differences across states, it overstates the relative cost of correctional officers in California.)
+
+Still, it is important to see the raw data.
+
+In addition, this is a sanity check on two different data sources:
+
+*   Occupational Employment and Wage Statistics (OEWS or OES), research database: This is the gold standard for cross-state comparison in the number of workers or their average wages. But it is only one number per occupation per state per year (e.g., correctional officers in California in 2020 were paid $88,710 on average). It's a high quality number, but it's only one number: we don't have data for all of the workers comprising the number so we can't see how it varies within and across states with education, experience, etc.. (We do also have OES data for each MSA in California, from a variant of the OES.)
+
+*   American Community Survey (ACS): This is a public-use survey that has details on (anonymized) individuals - their age, educational attainment, gender, race, ethnicity, marital status, state of residence, and other information. The survey has 15 million observations nationally (including children and retired people), 840 of which are for correctional officers in California. The richness of this data allows us to control for differences in education, experience, and other characteristics (and later, it allows us to compare correctional officers to the private sector). 
+
+We don't expect summaries of the ACS to be as good a measure of overall average wages as what we see in the OES, but we'd like the two data sources to tell the same basic story. The two graps below suggest that they do.
+
+We show average wages at 2020 levels from these two sources in the two figures below. 
+
+##### Wages based on the OES
+```{r include=TRUE, fig.width=6, fig.height=8}
+
+gtitle <- "State correctional officer salaries"
+gsubtitle <- ""
+capt1 <- "\nSource: Author's analysis of U.S. Bureau of Labor Statistics, Occupational and Employment Statistics Research Data."
+capt <- capt1
+pdata <- corr_oes %>%
+  filter(year==2020, stabbr != "US") %>%
+  mutate(stname=get_stname(stabbr))
+
+p <- pdata %>%
+  ggplot(aes(y=reorder(stname, wage), x=wage)) +
+  geom_point(aes(colour=caldum), size=1.5) +
+  scale_colour_manual(values=c("red", "blue")) +
+  theme_bw() +
+  labs(x="Annual wage, no adjustments", y=NULL,
+       caption=capt) +
+  ggtitle(label=gtitle, subtitle = gsubtitle) +
+  theme(axis.text.y = element_text(hjust = 0)) +
+  geom_vline(xintercept = median(pdata$wage)) +
+  scale_x_continuous(breaks=seq(0, 100e3, 10e3), labels=label_comma(), limits=c(30e3, 90e3)) +
+  legend_none +
+  caption_left
+
+p
+
+ggsave(here::here("results", "wages_oes.png"), 
+       plot=statefe_dots, width=10, height=8, scale=1.25)
+
+
+```
+
+##### Wages based on the ACS
+
+The similarity between the ACS plot here and the OES plot above give us confidence when using the ACS to control for differences across individuals.
+
+```{r include=TRUE, fig.width=6, fig.height=8}
+
+gtitle <- "State correctional officer salaries"
+gsubtitle <- ""
+capt1 <- "\nSource: Author's analysis of U.S. Bureau of the Census, American Community Survey."
+capt <- capt1
+pdata <- corr_wages %>%
+  mutate(stname=get_stname(stabbr2),
+         stname=ifelse(stabbr2=="other", "Smaller states as a group", stname),
+         caldum=stabbr2=="CA")
+
+p <- pdata %>%
+  ggplot(aes(y=reorder(stname, rwagp), x=rwagp)) +
+  geom_point(aes(colour=caldum), size=1.5) +
+  scale_colour_manual(values=c("red", "blue")) +
+  theme_bw() +
+  labs(x="Annual wage, no adjustments", y=NULL,
+       caption=capt) +
+  ggtitle(label=gtitle, subtitle = gsubtitle) +
+  theme(axis.text.y = element_text(hjust = 0)) +
+  geom_vline(xintercept = median(pdata$rwagp)) +
+  scale_x_continuous(breaks=seq(0, 100e3, 10e3), labels=label_comma(), limits=c(30e3, 90e3)) +
+  legend_none +
+  caption_left
+
+p
+
+ggsave(here::here("results", "wages_acs.png"), 
+       plot=statefe_dots, width=10, height=8, scale=1.25)
+
+
+```
+
+##### Wages in California relative to other states, over time, based on the OES
+
+```{r include=TRUE}
+# count(corr_oes, stabbr)
+pdata <- corr_oes %>%
+  filter(stabbr %in% c("US", "CA", compstates)) %>%
+  group_by(year) %>%
+  mutate(pdwage=wage / wage[stabbr=="US"] * 1 - 1,
+         stname=get_stname(stabbr)) %>%
+  ungroup %>%
+  filter(stabbr != "US")
+
+cols <- c('#a6cee3','#1f78b4','black','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6')
+
+capt1 <- "\nSource: U.S. Bureau of Labor Statistics, Occupational Employment and Wage Statistics Research Database"
+capt2 <- "Note: Not adjusted for price differences across states."
+capt <- paste0(capt1, "\n", capt2)
+
+p <- pdata %>%
+  ggplot(aes(year, pdwage, colour=stabbr)) +
+  geom_line(size=1.0) +
+  geom_point() +
+  geom_hline(yintercept = 0) +
+  scale_colour_manual(values=cols) +
+  # scale_size_manual(values=c(1, rep(.5, 8))) +
+  labs(y="% above or below U.S. average", x=NULL,
+       caption=capt) +
+  scale_y_continuous(breaks=seq(-1, 1, .05), labels = label_percent(accuracy=1)) +
+  ggtitle("State correctional officers' salaries relative to U.S. average",
+          subtitle="California, neighbors, and selected other states") +
+  theme_bw() +
+  legend_notitle +
+  caption_left
+p
+
 
 ```
 
@@ -1342,13 +1508,13 @@ fe <- fixef(femod)
 cfe <- tibble(stabbr=names(fe$stabbr2), fe=fe$stabbr2) %>%
   mutate(cfe=fe - mean(fe),
          stname=get_stname(stabbr),
-         stname=ifelse(stabbr=="other", "-- other states as a group", stname))
+         stname=ifelse(stabbr=="other", "Small states as a group", stname))
 
 gtitle <- "State correctional officer salaries relative to those in the average state"
 gsubtitle <- "Adjusted for state price levels, and controlling for experience, education, and demographic characteristics"
 capt1 <- "Source: Author's analysis of U.S. Bureau of the Census, American Community Survey, 2015-2019 PUMS."
 capt2 <- "Price adjustments using U.S. Bureau of Economic Analysis Regional Price Parities."
-capt3 <- "Note: States with fewer than 50 observations were grouped togther."
+capt3 <- "Note: States with fewer than 50 observations were grouped together."
 capt <- paste0(capt1, "\n", capt2, "\n", capt3)
 statefe_dots <- cfe %>%
   # filter(stabbr != "Other") %>%
@@ -1373,7 +1539,10 @@ ggsave(here::here("results", "statefe_dots.png"),
   
 ```
 
-## Comparisons of California state correctional officers' wages and salaries to those of other California workers
+## Comparisons of California state correctional officers' wages to California local and federal correctional officers
+
+
+## Comparisons of California state correctional officers' wages to those of other California workers
 
 We want to compare wages of California correctional officers to wages of other workers in California, particularly in the private sector, but how can we do this given that correctional workers:
 
