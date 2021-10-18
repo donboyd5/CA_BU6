@@ -4,6 +4,7 @@
 .Ruserdata
 data/
 ignore/
+results/
 *.html
 *.jpg
 *.png

@@ -99,7 +99,7 @@ f1 <- function(year){
   print(dlpath)
   download.file(upath, dlpath, mode = "wb")
 }
-purrr::map(2016:2020, f1)
+# purrr::map(2016:2020, f1)
 # 2016 area	area_title	naics	naics_title	occ code	occ title	group	i_group	tot_emp	emp_prse	pct_total	h_mean	a_mean	mean_prse	h_pct10	h_pct25	h_median	h_pct75	h_pct90	a_pct10	a_pct25	a_median	a_pct75	a_pct90	annual	hourly
 # 2020 AREA	AREA_TITLE	NAICS	NAICS_TITLE	I_GROUP	OCC_CODE	OCC_TITLE	O_GROUP	TOT_EMP	EMP_PRSE	PCT_TOTAL	H_MEAN	A_MEAN	MEAN_PRSE	H_PCT10	H_PCT25	H_MEDIAN	H_PCT75	H_PCT90	A_PCT10	A_PCT25	A_MEDIAN	A_PCT75	A_PCT90	ANNUAL	HOURLY
 
@@ -140,6 +140,10 @@ df3 %>%
   filter(stabbr=="CA", year==2020, occ=="33-3012")
 
 saveRDS(df3, paste0(resdir, "oesres_allsectors.rds"))
+
+oesres <- readRDS(paste0(resdir, "oesres_allsectors.rds"))
+glimpse(oesres)
+
 
 
 #.. NAICS 99 has federal, state, and local govt separately ----
