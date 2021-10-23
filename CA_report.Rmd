@@ -328,8 +328,10 @@ We show average wages at 2020 levels from these two sources in the two figures b
 
 gtitle <- "State correctional officer salaries in 2020"
 gsubtitle <- NULL
-capt1 <- paste0("\nSource: ", source_oesres, ".")
-capt <- capt1
+capt1 <- "Note: vertical line marks median"
+capt2 <- paste0("\nSource: ", source_oesres, ".")
+capt <- paste0("\n", capt1, "\n", str_wrap(capt2, 150))
+
 pdata <- corr_oes %>%
   filter(year==2020, stabbr != "US") %>%
   mutate(stname=get_stname(stabbr))
@@ -365,8 +367,11 @@ Now we look at the same data (OES), adjusted for price differences across states
 
 gtitle <- "State correctional officer salaries in 2020"
 gsubtitle <- "Adjusted for differences in state cost of living"
-capt1 <- paste0("\nSources: ", source_oesres, "; and ", source_rpp, ".")
-capt <- str_wrap(capt1, 100)
+
+capt1 <- "Note: vertical line marks median"
+capt2 <-paste0("\nSources: ", source_oesres, "; and ", source_rpp, ".")
+capt <- paste0("\n", capt1, "\n", str_wrap(capt2, 100))
+
 pdata <- corr_oes %>%
   filter(year==2020, stabbr != "US") %>%
   mutate(stname=get_stname(stabbr),
@@ -404,8 +409,11 @@ The similarity between the ACS plot here and the OES plot above give us confiden
 
 gtitle <- "State correctional officer salaries"
 gsubtitle <- "Based on a 5-year sample adjusted to 2019 income levels"
-capt1 <- paste0("\nSource: ", source_acs, ".")
-capt <- capt1
+
+capt1 <- "Note: vertical line marks median"
+capt2 <-paste0("\nSource: ", source_acs, ".")
+capt <- paste0("\n", capt1, "\n", str_wrap(capt2, 100))
+
 pdata <- corr_wages %>%
   mutate(stname=get_stname(stabbr2),
          stname=ifelse(stabbr2=="other", "Smaller states as a group", stname),
@@ -573,7 +581,7 @@ keyfacts$statemod <- femod
 
 ```
 
-#### Summary results
+#### Model summary
 
 We begin with a summary of model results. This is a check on things, before we get to the state fixed effects.
 
@@ -581,13 +589,29 @@ We begin with a summary of model results. This is a check on things, before we g
 
 Easiest just to talk about what the summary table below means, if you are interested.
 
+<!-- To allow for a wider html table in output, put the following html code before the chunk -->
+<!-- <div style = "width:120%; height:auto; margin: auto;"> -->
+<!-- and the following after the chunk -->
+<!-- </div> -->
+
+<div style = "width:120%; height:auto; margin: auto;">
 ```{r include=TRUE, rows.print=25}
+# R.options = list(width = SOME-BIG-VALUE)
+# R.options = list(width = 1000)
+
+# To allow for a wider html table in output, put the following html code before the chunk
+# <div style = "width:120%; height:auto; margin: auto;">
+# and the following after the chunk
+# </div>
+
 summary(femod)
-r2(femod, type = "all", full_names = TRUE)  # gives everything
-r2(femod, c("cor2", "r2", "pr2", "war2"), full_names = TRUE) # numbers are not quite the same as from summary
-fitstat(femod, ~ rmse + r2 + wald + wf)
+# r2(femod, type = "all", full_names = TRUE)  # gives everything
+# r2(femod, c("cor2", "r2", "pr2", "war2"), full_names = TRUE) # numbers are not quite the same as from summary
+# fitstat(femod, ~ rmse + r2 + wald + wf)
 
 ```
+</div>
+
 
 <br> <br> <br>
 
@@ -666,6 +690,25 @@ I take 3 approaches to within-California comparisons:
 2.   Compare state government correctional officers to private sector workers in law, public safety, corrections & security occupations
 3.   Compare state government correctional officers to private sector workers in occupations where workers have simlar education attainment
 
+```{r wpi_us}
+count(wpirates, own, ownf)
+count(caworkers, cow, cowf)
+# 1 prof, 2 nonprof private, 4 state, 3 local, 5 federal
+# 1 private, 7 state, 8 local
+wpius <- wpirates %>%
+  filter(stabbr=="US", year==2019, 
+         (ocode=="333012" & own %in% 7:8) | (ocode!="333012" & own==1)) %>%
+  rename(wpirate=value) %>%
+  mutate(soc=paste0(str_sub(ocode, 1, 2), "-", substr(ocode, 3, length(ocode))),
+         cow=case_when(own==1 ~ 1,
+                       own==7 ~ 4,
+                       own==8 ~ 3,
+                       TRUE ~ -99)) %>%
+  select(soc, ocode, oname, cow, own, ownf, displevel, wpirate)
+count(wpius, cow, own, ownf)
+
+```
+
 
 ### Within-California comparisons: Federal, state, and local government correctional officers
 
@@ -673,8 +716,11 @@ I take 3 approaches to within-California comparisons:
 #.. ACS subset for regression ----
 cacorr_fslacs <- caworkers %>%
   filter(soc=="33-3012", cow %in% 3:5) %>%
+  left_join(wpius %>% select(soc, cow, wpirate), by = c("cow", "soc")) %>%
   mutate(cowf=factor(cow, levels=c(4, 3, 5), labels=c("state", "local", "federal"))) %>%
   arrange(cowf)
+
+summary(cacorr_fslacs)
 
 ```
 
@@ -874,18 +920,24 @@ cacorr_fslacs
 summary(cacorr_fslacs)
 count(cacorr_fslacs, cow, cowf)
 
-mod_fsl <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) | cowf,
+camod_fsl <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) | cowf,
                data=cacorr_fslacs, notes = FALSE)
 
 ```
 
-##### Summary results from the model.
+<!-- To allow for a wider html table in output, put the following html code before the chunk -->
+<!-- <div style = "width:120%; height:auto; margin: auto;"> -->
+<!-- and the following after the chunk -->
+<!-- </div> -->
 
-
+##### Model summary
+<div style = "width:120%; height:auto; margin: auto;">
 ```{r include=TRUE}
-summary(mod_fsl)
+summary(camod_fsl)
 
 ```
+</div>
+
 
 ##### Key result: California state correctional officer wages vs. local and federal, after controls
 
@@ -893,7 +945,7 @@ State correctional wages are about 17-18% higher than those of local and federal
 
 
 ```{r include=TRUE}
-fe <- fixef(mod_fsl)
+fe <- fixef(camod_fsl)
 
 fefsl_df <- tibble(level=names(fe$cowf), fe=fe$cowf) %>%
   mutate(pdstate=fe[level=="state"] - fe,
@@ -920,8 +972,6 @@ fefsl_df %>%
 ```
 
 
-
-
 ### Within-California comparisons: Law, Public Safety, Corrections & Security job cluster
 
 Here we compare California *state* correctional officers' wages, adjusted for regional cost of living, with wages of California *private sector* workers in the [Law, Public Safety, Corrections & Security job cluster](https://www.onetonline.org/find/career?c=12&g=Go).
@@ -946,13 +996,16 @@ cacluster_df <- caworkers %>%
               select(soc=occ, clust_occname=occname) %>% 
               mutate(incluster=TRUE),
             by="soc") %>%
-  filter(incluster) %>%
+  filter(incluster)  %>%
+  left_join(wpius %>% select(soc, cow, wpirate), by = c("cow", "soc")) %>%
   mutate(edattain=fct_drop(edattain),
          cowf=fct_drop(cowf)) %>%
   group_by(soc, occname) %>%
   mutate(n=n(),
          occgroup=ifelse(n < obs_cutoff, "lowobs", occname)) %>%
   ungroup
+
+summary(cacluster_df)
 
 count(cacluster_df, cowf)
 count(cacluster_df, soc, occname)
@@ -966,12 +1019,18 @@ sum(check$n)
 
 
 ##### Model summary
+<!-- To allow for a wider html table in output, put the following html code before the chunk -->
+<!-- <div style = "width:120%; height:auto; margin: auto;"> -->
+<!-- and the following after the chunk -->
+<!-- </div> -->
+<div style = "width:120%; height:auto; margin: auto;">
 
 ```{r include=TRUE}
 camod_cluster <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) | occgroup,
                data=cacluster_df)
 summary(camod_cluster)
 ```
+</div>
 
 
 ##### Key result: California state correction officers' wages relative to California private sector wages in the same cluster {#keycluster}
@@ -1024,6 +1083,73 @@ ggsave(here::here("results", "occfe_dots.png"),
 
 ```
 
+
+
+##### Alternative model including workplace injuries
+<!-- To allow for a wider html table in output, put the following html code before the chunk -->
+<!-- <div style = "width:120%; height:auto; margin: auto;"> -->
+<!-- and the following after the chunk -->
+<!-- </div> -->
+<div style = "width:120%; height:auto; margin: auto;">
+
+```{r include=TRUE}
+camod_cluster_wpi <- feols(lrppwagp ~ wpirate + exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) | occgroup,
+               data=cacluster_df)
+summary(camod_cluster_wpi)
+```
+</div>
+
+##### Alternative: California state correction officers' wages relative to California private sector wages in the same cluster with workplace injury rate control
+
+We lose a lot of workers and occupations when we include workplace injury controls.
+
+
+```{r include=TRUE, fig.width=8, fig.height=8}
+# , fig.width=10, fig.height=8
+fecamod_cluster_wpi <- fixef(camod_cluster_wpi)
+
+cfe <- tibble(occname=names(fecamod_cluster_wpi$occgroup), fe=fecamod_cluster_wpi$occgroup) %>%
+  mutate(cfe=fe - mean(fe)) %>% 
+  arrange(desc(cfe))
+
+gtitle <- "ALTERNATIVE: California state correctional officer wages relative to private sector wages for jobs in the same occupational cluster"
+gsubtitle <- "Adjusted for Metropolitan Statistical Area (MSA) price levels, and controlling for experience, education, and demographic characteristics"
+capt1 <- paste0("\nSource: ", source_acs, ".")
+capt2 <- paste0("Price adjustments using ", source_rpp, ".")
+capt3 <- "Note: Occupations with fewer than 50 observations were grouped together."
+capt <- paste0(capt1, "\n", capt2, "\n", capt3)
+occfe_wpi_dots <- cfe %>%
+  mutate(grp=str_detect(occname, "Correctional officers"),
+         occname=ifelse(grp, paste0(occname, " (state government)"), occname),
+         occname=ifelse(occname=="lowobs", "Low-observation occupations as a group", occname)) %>%
+  ggplot(aes(y=reorder(str_wrap(occname, 25), cfe), x=cfe * 100)) +  # str_wrap(occname, 30) occname
+  geom_point(aes(colour=grp), size=1.5) +
+  geom_vline(xintercept = 0) +
+  scale_y_discrete(name=NULL) + # , expand = c(.05, .1)
+  scale_x_continuous(name="% above or below cluster average", breaks=seq(-100, 100, 5)) +
+  scale_colour_manual(values=c("blue", "red")) +
+  theme_bw() +
+  labs(caption=capt) +
+  ggtitle(label=str_wrap(gtitle, 100), subtitle = str_wrap(gsubtitle, 100)) +
+  theme(axis.text.y = element_text(hjust = 0)) +
+  theme(aspect.ratio = 4/5) +
+  legend_none +
+  caption_left
+  # theme(plot.title = element_textbox(hjust = 0.5,
+  #                                width = unit(0.5, "npc"),
+  #                                margin = margin(b = 15))  )
+
+# expand = c(0, 0.3)
+occfe_wpi_dots
+
+# ggsave(here::here("results", "occfe_dots.png"), 
+#        plot=occfe_dots, width=10, height=8, scale=1.25)
+  
+
+```
+
+
+
 ### Within-California comparisons: Occupations with similar educational attainment
 
 Here we compare California *state* correctional officers' wages, adjusted for regional cost of living, with wages of California *private sector* workers in occupations where the percentage of workers with less than an associate's degree is within +/- 5 percentage points of the percentage for state correctional officers (therefore, we compare to occupations where roughly 68-78 percent of the workers have less than an associate's degree).
@@ -1039,6 +1165,7 @@ I have not found good measures of job stress by occupation. There is a good meas
 corred_workers_cut <- caworkers %>%
   filter((cow==4 & soc=="33-3012") | 
            (cow %in% 1:2 & soc!="33-3012")) %>%
+  left_join(wpius %>% select(soc, cow, wpirate), by = c("cow", "soc")) %>%
   group_by(soc, occname) %>%
   mutate(nocc=n(),
          occgroup=ifelse(nocc >= obs_cutoff, occname, "other"))  %>%
@@ -1068,11 +1195,7 @@ summary(cacorr_ed)
 ##### Measures of workplace injuries resulting in days away from work
 
 ```{r}
-wpius <- wpirates %>%
-  filter(stabbr=="US", year==2019, 
-         (ocode=="333012" & own==7) | (ocode!="333012" & own==1)) %>%
-  rename(wpirate=value) %>%
-  mutate(soc=paste0(str_sub(ocode, 1, 2), "-", substr(ocode, 3, length(ocode))))
+#.. THIS CAN BE IMPROVED (10/23/2021) -- FIX MISMATCHES ----
 
 # bring in education from caworkers where we have it
 cawed <- corred_workers_cut %>% 
@@ -1080,7 +1203,11 @@ cawed <- corred_workers_cut %>%
   select(soc, oname_acs=occname, occ_ltassoc) %>%
   distinct()
 
+count(corred_workers_cut %>% ungroup, cow, cowf)
+count(wpius %>% filter(soc=="33-3012"), cow)
+
 wpius_cawed <- wpius %>%
+  filter(!(soc=="33-3012" & cow==3)) %>% # FOR NOW drop local correctional officers
   full_join(cawed, by="soc") %>%
   mutate(invar=case_when(!is.na(oname) & !is.na(oname_acs) ~ "in_both",
                          is.na(oname) ~ "not_wpi",
@@ -1114,12 +1241,12 @@ comps <- wpius_cawed %>%
 ```
 
 
-Among occupations where workers have similar educational attainment, California state correctional officers have the highest rate of workplace injury resulting in days away from work.
+Among occupations where workers have similar educational attainment, California state correctional officers have the highest rate of workplace injury resulting in days away from work. [According to BLS](https://www.bls.gov/iif/oshwc/osh/case/cd_r98_2019.htm), "Days-away-from-work cases include those that resulted in days away from work, some of which also included job transfer or restriction ... The incidence rates represent the number of injuries and illnesses per 10,000 full-time workers." (Note that the rate is a rate of injuries per worker in a single year.)
 
 ```{r wpi_table, include=TRUE}
 
 comps %>%
-  mutate(oname_acs=ifelse(soc=="33-3012", paste0(oname_acs, " (State)"), oname_acs)) %>%
+  mutate(oname_acs=ifelse(soc=="33-3012", paste0(oname_acs, " (state government)"), oname_acs)) %>%
   select(soc, oname_acs, occ_ltassoc, wpirate) %>%
   arrange(desc(wpirate)) %>%
   gt() %>%
@@ -1141,7 +1268,6 @@ comps %>%
 ```
 
 
-
 <br>
 <br>
 
@@ -1151,12 +1277,19 @@ The following model regresses wages adjusted for regional cost of living differe
 
 
 ##### Model summary
+<!-- To allow for a wider html table in output, put the following html code before the chunk -->
+<!-- <div style = "width:120%; height:auto; margin: auto;"> -->
+<!-- and the following after the chunk -->
+<!-- </div> -->
+
+<div style = "width:120%; height:auto; margin: auto;">
 ```{r include=TRUE}
 camod_educ <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) | occgroup,
                data=cacorr_ed)
 summary(camod_educ)
 
 ```
+</div>
 
 ##### Key result: California state correction officers' wages relative to California private sector wages, similar education
 ```{r include=TRUE, fig.width=10, fig.height=12}
@@ -1210,11 +1343,10 @@ A large drop in coefficient on corrdumTRUE after including wpirate would suggest
 
 We see only a very small drop.
 
-Discussion to come.
-
 
 ```{r}
 cacorr_ed_alt <- cacorr_ed %>%
+  rename(wpirate2=wpirate) %>% 
   right_join(comps %>% select(soc, wpirate), by="soc") %>%
   mutate(corrdum=soc=="33-3012")
 summary(cacorr_ed_alt)
@@ -1231,15 +1363,26 @@ camod_educ_wpi <- feols(lrppwagp ~ corrdum + wpirate + exp + exp2 + edattain + m
 ```
 
 ##### Model summary:  WITHOUT including workplace injury rates
+<!-- To allow for a wider html table in output, put the following html code before the chunk -->
+<!-- <div style = "width:120%; height:auto; margin: auto;"> -->
+<!-- and the following after the chunk -->
+<!-- </div> -->
+<div style = "width:120%; height:auto; margin: auto;">
 ```{r include=TRUE}
 summary(camod_educ_xwpi)
 ```
+</div>
 
 ##### Model summary:  INCLUDING workplace injury rates
+<!-- To allow for a wider html table in output, put the following html code before the chunk -->
+<!-- <div style = "width:120%; height:auto; margin: auto;"> -->
+<!-- and the following after the chunk -->
+<!-- </div> -->
+<div style = "width:120%; height:auto; margin: auto;">
 ```{r include=TRUE}
 summary(camod_educ_wpi)
 ```
-
+</div>
 
 # Benefits of correctional officers
 

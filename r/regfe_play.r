@@ -181,3 +181,6 @@ summary(femod)
 summary(mod_fsl)
 summary(camod_cluster)
 summary(camod_educ)
+
+str(summary(femod))
+str(print(summary(femod)))
