@@ -43,7 +43,7 @@ workers <- read_csv("
 id, yob, aoe, aor, aod, fas
 1, 1980, 25, 55, 85, 129032.258
 2, 1980, 25, 60, 75, 100e3
-3, 1980, 25, 55, 85, 100e3
+3, 1980, 25, 57, 82, 100e3
 ")
 workers
 
@@ -51,11 +51,13 @@ workers
 # functions ---------------------------------------------------------------
 #  return df with ages, benefits
 
-make_params <- function(stabbr, benfactor, cola) {
+make_params <- function(stabbr, benfactor, cola, minaor=55, tier="newhire") {
   params <- list()
   params$stabbr <- stabbr
+  params$tier <- tier
   params$benfactor <- benfactor
   params$cola <- cola
+  params$minaor <- minaor
   params
 }
 
@@ -64,6 +66,9 @@ params_ma
 # $1,809,053
 params_ny <- make_params("NY", benfactor=.015, cola=.02)
 params_ny
+
+params_ca <- make_params("CA", benfactor=.025, cola=.02)
+params_ca
 
 pen <- function(row, params) {
   
@@ -97,7 +102,8 @@ check %>%
 df <- workers %>%
   rowwise() %>%
   mutate(penny=list(pen(.data, params_ny)),
-         penma=list(pen(.data, params_ma)))
+         penma=list(pen(.data, params_ma)),
+         penca=list(pen(.data, params_ca)))
 df         
 
 df2 <- df %>%
