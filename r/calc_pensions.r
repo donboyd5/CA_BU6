@@ -33,12 +33,24 @@ library(RColorBrewer)
 library(fixest)
 library(cgwtools)  # for resave
 
+library(fredr)
+
 library(btools)
 library(bdata)
 
 
 # constants ---------------------------------------------------------------
 
+# API keys
+bea_apikey <- "21F782AD-56A6-439D-B3D5-9A592F020E26"
+bls_apikey <- "e1a32c87a90f4d889f5342174e275470"
+brbls_apikey <- "2ec4ce7e7f5b4934a8477539715adbae"
+census_apikey <- "b27cb41e46ffe3488af186dd80c64dce66bd5e87"
+fred_apikey <- "a5e1199baac333154cbffcba3b263c28"
+
+# usethis::edit_r_environ() # setting the environment variable didn't work
+# fredr_get_key()
+# fredr_has_key()
 
 
 # https://www.urban.org/policy-centers/cross-center-initiatives/program-retirement-policy/projects/urban-institute-state-and-local-employee-pension-plan-database
@@ -46,13 +58,75 @@ library(bdata)
 sleppd <- r"(E:\data\SLEPP_database\)"
 sleppfn <- "slepp_database_2018_for_posting_december_update.xlsx"
 
+xlfn <- "Boyd_CABU6(1).xlsx"
+
+
+# ONETIME: Get and save cpi -----------------------------------------------
+fredr_set_key(fred_apikey)
+# get cpi for the same years so we can compute real awi historically
+cpi1 <- fredr(
+  series_id = "USACPIALLAINMEI",
+  observation_start = as.Date("1949-01-01"),
+  observation_end = as.Date("2020-01-01"),
+  frequency = "a", # quarterly
+  units = "pch" # change over previous value
+  )
+
+cpi <- cpi1 %>%
+  filter(!is.na(value)) %>%
+  mutate(year=year(date),
+         cpipch=value / 100) %>%
+  select(year, cpipch)
+cpi
+
+saveRDS(cpi, here::here("data", "cpi.rds"))
 
 
 # get model parameters ----------------------------------------------------
-fn <- "Boyd_CABU6(1).xlsx"
-sheet <- "pension_parameters"
 
-params <- read_excel(here::here("boyd", fn), sheet=sheet)
+
+# inflation ---------------------------------------------------------------
+cpi_pch <- .02
+
+#.. Social Security parameters ----
+ss_eecrate <- .062
+
+
+#.. wage-related parameters ----
+# average wage index series and awi
+awi1 <- read_excel(here::here("boyd", xlfn), sheet="awiseries", range="A2:B72")
+awi <- awi1 %>%
+  mutate(awi=awiseries[year==max(year)] / awiseries,
+         awipch=awiseries / awiseries[match(year - 1, year)] - 1)
+awi
+
+
+# calculate average change in real wage index
+real <- awi %>%
+  left_join(cpi, by = "year") %>%
+  filter(!is.na(awipch), !is.na(cpipch)) %>%
+  mutate(realpch=awipch - cpipch)
+summary(real)
+real %>%
+  select(year, contains("pch")) %>%
+  pivot_longer(cols=-year) %>%
+  ggplot(aes(year, value, colour=name)) +
+  geom_line()
+
+real_pch <- real %>% filter(year > 1980) %>% .$realpch %>% mean()
+real_pch  # 0.009007175
+
+salgrow <- real_pch + cpi_pch
+
+
+#.. Pension parameters ----
+params1 <- read_excel(here::here("boyd", xlfn), sheet="pension_parameters")
+params1
+
+params <- params1 %>%
+  filter(!is.na(benfactor_normal)) %>%
+  mutate(compound=as.logical(compound),
+         socsec=as.logical(socsec))
 params
 
 
@@ -65,7 +139,7 @@ aoe, aor, aod, fas
 25, 60, 75, 100e3
 25, 57, 82, 100e3
 ") %>%
-  mutate(id=row_number())
+  mutate(worker=row_number())
 workers
 
 # params <- read_csv(
@@ -83,39 +157,150 @@ workers
 # COLA for all 3 is % starting in 2nd year after retirement. Cumulative adjustment can't be more than cumulative change in CPI since retirem
 # =HYPERLINK("https://www.calpers.ca.gov/page/newsroom/calpers-news/2017/board-adopts-new-rates-state-school-employers","https://www.calpers.ca.gov/page/newsroom/calpers-news/2017/board-adopts-new-rates-state-school-employers")
 
-
+# cartesian product (join)
 data <- 
   full_join(params %>% select(stabbr:socsec), workers, by = character()) 
+data
 
 # data <- expand_grid(params, workers)  # same thing
 
 
 # functions ---------------------------------------------------------------
-pen <- function(worker){
-  # define variables we don't need to keep in the output
-  max_early_years <- worker$aor_normal - worker$aor_min
+
+iwage <- function(wdf, salgrow){
+  # indexed (real) wage for each year
+  # based on iwage factors, assumed to be the same for every year
+  
+  # inputs: wdf -- worker data frame (one worker)
+  #         salgrow -- constant real growth rate for wages
+  # output: iwage -- indexed wage series
+  
+  # https://www.ssa.gov/oact/COLA/awifactors.html
+  
+  # An individual's earnings are always indexed to the average wage level two
+  # years prior to the year of first eligibility. Thus, for a person retiring at
+  # age 62 in 2022, the person's earnings would be indexed to the average wage
+  # index for 2020
+  
+  # A factor will always equal one for the year in which the person attains age
+  # 60 and all later years. The indexing factor for a prior year Y is the result
+  # of dividing the average wage index for the year in which the person attains
+  # age 60 by the average wage index for year Y.
+  
+  n <- wdf$age - 60
+  awi <- 1 / (1 + salgrow)^n
+  awi <- ifelse(wdf$age > 60, 1, awi)
+  iwage <- wdf$wage * awi
+  iwage
+}
+
+
+aime <- function(iwage){
+  # aime -- average indexed monthly earnings
+  
+  # iwage -- vector of indexed wages
+  
+  # https://www.ssa.gov/oact/COLA/Benefits.html#aime
+  
+  # Up to 35 years of earnings are needed to compute average indexed monthly
+  # earnings. After we determine the number of years, we choose those years with
+  # the highest indexed earnings, sum such indexed earnings, and divide the
+  # total amount by the total number of months in those years.
+  
+  # the sums for the highest 35 years of indexed earnings and the corresponding
+  # average monthly amounts of such earnings. (The average is the result of
+  # dividing the sum of the 35 highest amounts by the number of months in 35
+  # years.) Such an average is called an "average indexed monthly earnings"
+  # (AIME).
+  
+  best_wages <- sort(iwage, decreasing = TRUE)
+  if(length(best_wages) > 35) length(best_wages) <- 35
+  aime <- sum(best_wages) / (length(best_wages) * 12)
+  aime
+}
+
+pia <- function(wdf, salgrou){
+  # pia -- primary insurance amount
+  
+  # inputsreceive a vector of years and wages, 
+  # return pia, primary insurance amount
+  
+  # https://www.ssa.gov/oact/COLA/Benefits.html
+  
+  # The PIA is the sum of three separate percentages of portions of the AIME.
+  # While the percentages of this PIA formula are fixed by law, the dollar
+  # amounts in the formula change annually with changes in the national average
+  # wage index. These dollar amounts, called "bend points," govern the portions
+  # of the AIME.
+  
+  # The bend points in the year 2022 PIA formula, $1,024 and $6,172, apply for
+  # workers becoming eligible in 2022. See the table of bend points for the bend
+  # points applicable in past years.
+  
+  # For example, a person who had maximum-taxable earnings in each year since
+  # age 22, and who retires at age 62 in 2022, would have an AIME equal to
+  # $11,430. Based on this AIME amount and the bend points $1,024 and $6,172,
+  # the PIA would equal $3,357.60. This person would receive a reduced benefit
+  # based on the $3,357.60 PIA. The first COLA this individual could receive is
+  # the one effective for December 2022.
+  
+
+}
+
+ssben <- function(wdf, salgrow){
+  iwage <- iwage(wdf, salgrow)  # iwage vector of indexed wages
+  aime <- aime(iwage)  # average indexed monthly earnings
+  pia <- pia(wdf, aime)  # primary insurance amount
+  pia
+}
+
+
+pen <- function(w){
+  # w is a single worker (one row)
+  # TODO:
+  # - socsec
+  
+  # define interim-calc variables we don't need to keep in the output
+  max_early_years <- w$aor_normal - w$aor_min
   early_penalty_per_year <- ifelse(max_early_years > 0,
-                                   (worker$benfactor_normal - worker$benfactor_min) / max_early_years,
+                                   (w$benfactor_normal - w$benfactor_min) / max_early_years,
                                    0)
   
-  # compute benefits by year
-  results <- tibble(age=worker$aoe:worker$aod) %>%
-    mutate(fyos=worker$aor - worker$aoe + 1,
-           early_years=pmax(worker$aor_normal - worker$aor, 0),
+  # compute employee contributions and benefits by year
+  results <- tibble(age=w$aoe:w$aod) %>%
+    # determine career wage and contributions
+    mutate(year=row_number(),
+           fyos=w$aor - w$aoe,  # final years of service
+           yos=ifelse(age < w$aor, age - w$aoe + 1, NA_real_),  # actual years of service
+           wage=ifelse(age < w$aor, 
+                       w$fas / ((1 + salgrow)^(fyos - yos)),
+                       NA_real_),
+           eec=ifelse(yos > 0,
+                      pmax(wage - w$eec_exclude, 0) * w$eec_rate,
+                      NA_real_),
+           sstax=ifelse(w$socsec &   # the person participates in Soc Sec
+                          (yos > 0),
+                        wage * ss_eecrate,
+                        0)) %>%
+    # now determine retirement benefits
+    mutate(early_years=pmax(w$aor_normal - w$aor, 0),
            early_penalty=early_years * early_penalty_per_year,
-           benfactor=worker$benfactor_normal - early_penalty,
+           benfactor=w$benfactor_normal - early_penalty,
            pctfas=benfactor * fyos,
-           ibenefit=worker$fas * pctfas,
-           year=row_number(),
-           yos=ifelse(age < worker$aor, age - worker$aoe + 1, fyos),
-           yor=ifelse(age >= worker$aor, age - worker$aor + 1, 0),
-           benefit=ifelse(age >= worker$aor, ibenefit * (1 + worker$cola)^(yor - 1), 0)
-           )
+           ibenefit=w$fas * pctfas,
+           yor=ifelse(age >= w$aor, age - w$aor + 1, 0),
+           benefit=ifelse(age >= w$aor, 
+                          ibenefit * (1 + w$cola)^(yor - 1),
+                          0)
+           ) %>%
+    # now determine social security benefits
+    mutate(ssben=ssben(., salgrow)) %>%
+    select(year, age, yos, yor, everything())
   results
 }
 
 
-# passing . passes the ENTIRE data frame
+# passing . passes the ENTIRE data frame (ALL rows)
 # passing .data passes the row, but NOT as a data frame
 df <- data %>%
   rowwise() %>%
@@ -123,7 +308,14 @@ df <- data %>%
   ungroup
 
 df2 <- df %>%
-  filter(row_number()==1) %>%
+  # filter(row_number()==1) %>%
+  filter(tname=="peprass") %>%
+  unnest(cols = c(pension))
+
+
+df %>%
+  filter(row_number()==1, worker==1) %>%
+  select(stabbr, tier, tname, worker, fas, aoe, aor, pension) %>%
   unnest(cols = c(pension))
 
 
@@ -135,30 +327,84 @@ df %>%
   geom_point()
 
 
+
+# summarize results -------------------------------------------------------
+
+
 dr <- .04
 age0 <- 50
 df3 <- df %>%
   unnest(cols = c(pension)) %>%
   mutate(tier=factor(tier, levels=c("major", "prior", "newhire"))) %>%
-  group_by(stabbr, tier, tname, id) %>%
+  group_by(stabbr, tier, tname, worker) %>%
   arrange(age) %>%
-  mutate(pv=benefit / {(1 + dr)^(age - age0)}) %>%
+  mutate(eec_pv=eec / {(1 + dr)^(age - age0)},
+         ben_pv=benefit / {(1 + dr)^(age - age0)}) %>%
   ungroup %>%
-  arrange(stabbr, tier, tname, id) 
+  arrange(stabbr, tier, tname, worker) 
 
 df3 %>%
-  group_by(id, stabbr, tier, tname) %>%
+  group_by(worker, stabbr, tier, tname) %>%
   summarise(fyos=first(fyos),
             aor=first(aor),
             pctfas=first(pctfas),
-            pv=sum(pv)) %>%
+            eec_pv=sum(eec_pv),
+            ben_pv=sum(ben_pv)) %>%
+  mutate(net_pv=ben_pv - eec_pv) %>%
   ungroup %>%
-  filter(id==2) %>%
+  filter(worker==2) %>%
   arrange(tier) %>%
-  mutate(pchange=pv / pv[tier=="major"] - 1)
+  mutate(eec_ch=eec_pv - eec_pv[tier=="major"],
+         ben_ch=ben_pv - ben_pv[tier=="major"],
+         net_ch=net_pv - net_pv[tier=="major"],
+         ben_pch=ben_pv / ben_pv[tier=="major"] - 1,
+         net_pch=net_pv / net_pv[tier=="major"] - 1)
+
 
 
 # analysis ----------------------------------------------------------------
+
+f <- function(df){
+  print(df)
+  # tibble(age=df$aoe:df$aod)
+}
+
+# . passes the ENTIRE dataframe to the function
+# .data passes a "pronoun"
+tmp <- data %>%
+  group_by(stabbr, tier, tname, worker) %>%
+  nest() %>%
+  mutate(pen=list(f(.data)))
+
+
+
+tmp <- data %>%
+  group_by(select(everything())) %>%
+  nest() %>%
+  mutate(pen=list(f(.data)))
+
+tmp <- data %>%
+  rowwise() %>%
+  nest(data = everything()) %>%
+  mutate(pen=list(f(.)))
+
+
+f <- function(df){
+  # print(df$tier)
+  tibble(age=df$aoe:df$aod) %>%
+    mutate(age2=age^2)
+}
+tmp <- data %>%
+  rowwise() %>%
+  mutate(pen=list(f(.data)))
+tmp
+
+tmp2 <- tmp %>%
+  unnest(pen)
+tmp %>%
+  filter(worker==1) %>%
+  select(stabbr, tier, tname, worker, pen) %>%
+  unnest(cols = c(pen))
 
 
 
