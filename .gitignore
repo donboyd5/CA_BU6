@@ -5,6 +5,7 @@
 data/
 ignore/
 results/
+*~  # excel temp files
 *.html
 *.jpg
 *.png
