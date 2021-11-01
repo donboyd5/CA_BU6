@@ -466,12 +466,12 @@ pension <- function(db_covered, w, b, p){
            early_penalty=early_years * early_penalty_per_year,
            db_benfactor=p$db_benfactor_normal - early_penalty,
            db_pctfas=db_benfactor * w$fyos,
-           ipension=w$fas * db_pctfas, # initial pensoin
-           pension=ifelse(age >= w$aor,
+           ipension=w$fas * db_pctfas, # initial pension
+           db_pension=ifelse(age >= w$aor,
                           ipension * (1 + p$db_cola)^(b$yor - 1),
                           0)
     ) %>%
-    select(-names(b))
+    select(-names(b), -ipension)
   results
 }
 
@@ -567,37 +567,57 @@ pvage0 <- function(value, dr, age, age0) {
   }
 
 df3 <- df %>%
-  unnest(cols = c(wdata, base, socsec, pension)) %>%
-  mutate(tier=factor(tier, levels=c("major", "prior", "newhire"))) %>%
+  unnest(cols = c(wdata, base, socsec, pension, dcvalues)) %>%
+  mutate(across(where(is.numeric), ~replace(., is.na(.), 0))) %>%
+  mutate(tier=factor(tier, levels=c("major", "prior", "newhire", "private"))) %>%
   group_by(stabbr, tier, tname, worker) %>%
   arrange(age) %>%
-  mutate(across(.cols=c(eec, benefit, sstax, ssbenefit), list(pv=~pvage0(.x, dr, age, age0)))) %>%
+  mutate(across(.cols=c(db_eec, db_pension,
+                        sstax, ssbenefit,
+                        dc_eec, dc_annuity),
+                list(pv=~pvage0(.x, dr, age, age0)))) %>%
   ungroup %>%
   arrange(stabbr, tier, tname, worker) 
 summary(df3)  # make sure there are no NA values
+ns(df3)
 
-df3 %>%
+results <- df3 %>%
   group_by(worker, stabbr, tier, tname) %>%
   summarise(fyos=first(fyos),
             aor=first(aor),
-            pctfas=first(pctfas),
-            eec_pv=sum(eec_pv),
-            benefit_pv=sum(benefit_pv),
+            aod=first(aod),
+            db_pctfas=first(db_pctfas),
+            db_eec_pv=sum(db_eec_pv),
+            db_pension_pv=sum(db_pension_pv),
             sstax_pv=sum(sstax_pv),
             ssbenefit_pv=sum(ssbenefit_pv),
+            dc_eec_pv=sum(dc_eec_pv),
+            dc_annuity_pv=sum(dc_annuity_pv),
             .groups="drop") %>%
-  mutate(net_penpv=benefit_pv - eec_pv,
+  mutate(net_penpv=db_pension_pv - db_eec_pv,
          net_sspv=ssbenefit_pv - sstax_pv,
-         net_retpv=net_penpv + net_sspv) %>%
-  filter(worker==2) %>%
-  arrange(worker, stabbr, tier) # %>%
-  # mutate(eec_ch=eec_pv - eec_pv[tier=="major" & tname=="poffa"],
-  #        ben_ch=ben_pv - ben_pv[tier=="major" & tname=="poffa"],
-  #        net_ch=net_pv - net_pv[tier=="major" & tname=="poffa"],
-  #        ben_pch=ben_pv / ben_pv[tier=="major" & tname=="poffa"] - 1,
-  #        net_pch=net_pv / net_pv[tier=="major" & tname=="poffa"] - 1)
+         net_dcpv=dc_annuity_pv - dc_eec_pv,
+         net_dbdcpv=net_penpv + net_dcpv,
+         net_retpv=net_penpv + net_sspv + net_dcpv) %>%
+  arrange(worker, stabbr, tier) 
+
+results %>%
+  select(worker, stabbr, tier, tname, aor, aod, contains("net"))
+
+# all retirement income, including SS
+results %>%
+  select(worker, stabbr, tier, tname, aor, aod, net_retpv) %>%
+  pivot_wider(names_from = c(tier, tname), values_from = net_retpv)
+
+# just net pension benefits (not SS)
+results %>%
+  select(worker, stabbr, tier, tname, aor, aod, net_dbdcpv) %>%
+  pivot_wider(names_from = c(tier, tname), values_from = net_dbdcpv)
 
 
+
+# why does net pv at age 50 fall for those who retire later? I get it for the DB plans
+# but why the dc plans?
   
 # notes to self about nesting and passing data ----------------------------
 
