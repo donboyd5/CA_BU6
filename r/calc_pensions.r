@@ -101,24 +101,25 @@ aoe, aor, aod, fas
 workers
 
 
-# get retirement plan parameters ----
-params1 <- read_excel(here::here("boyd", xlfn), sheet="retplan_parameters")
+# get retirement plan parameters and make merged file ----------
+params1 <- read_excel(here::here("boyd", xlfn), sheet="retplan_parameters", skip = 1)
 params1
 ns(params1)
 
 params <- params1 %>%
   filter(!is.na(stabbr)) %>%
-  mutate(across(c(db_covered, dc_covered, ss_covered, db_cola_compound), as.logical))
+  mutate(across(c(db_max_benpct, db_cola_base)),
+         across(c(db_covered, dc_covered, ss_covered, db_cola_compound), as.logical))
 params
 
 
-# join workers and parameters ---------------------------------------------
+# join workers and parameters
 names(workers)
 names(params)
 data <- 
   full_join(workers, params %>% select(-db_source), by = character()) %>%  # cartesian product
   nest(wdata=c(yob:fas)) %>%  # worker data
-  nest(params=dc_eec_rate:db_eec_exclude) %>%  # retirement plan parameters
+  nest(params=dc_eec_rate:db_eec_rate2) %>%  # retirement plan parameters
   mutate(id=row_number()) %>%
   select(id, worker, stabbr, tier, tname, db_covered, ss_covered, dc_covered, everything())
 data
@@ -255,6 +256,7 @@ fbase <- function(w){
 
 
 #.. Social Security functions ----
+
 fiwage <- function(yob, year, wage){
   # indexed (real) wage for each year
   # based on iwage factors, assumed to be the same for every year
@@ -442,7 +444,7 @@ fsocsec <- function(ss_covered, w, b, p){
 
 # .. DB pension functions ----------------------------------------------------
 
-pension <- function(db_covered, w, b, p){
+pension <- function(db_covered, stabbr, tier, w, b, p){
   # w: worker data
   # b: base
   # p: params
@@ -455,29 +457,56 @@ pension <- function(db_covered, w, b, p){
                                    (p$db_benfactor_normal - p$db_benfactor_min) / max_early_years,
                                    0)
   
+  # eec <- function(stabbr, tier, wage, p) {
+  #   case_when(stabbr=="CA" ~ 
+  #               pmax(wage - p$db_eec_exclude, 0) * p$db_eec_rate,
+  #             stabbr=="MA" ~ wage * .09 + pmax(wage - 30000, 0) * .02,
+  #             TRUE ~ pmax(wage - p$db_eec_exclude, 0) * p$db_eec_rate
+  #             )
+  # }
+  
+  eec <- function(stabbr, tier, wage, p) {
+    p$db_eec_rate1 * pmin(wage, p$db_eec_base1) +
+      p$db_eec_rate2 * pmax(wage - p$db_eec_base1, 0)
+  }
+  
+  cola <- function(stabbr, tier, p) {
+    
+  }
+  
   # compute employee contributions and benefits by year
   results <- unnest(b, cols = c()) %>%
     # determine career contributions
     mutate(db_eec=ifelse(yos > 0,
-                         pmax(wage - p$db_eec_exclude, 0) * p$db_eec_rate,
+                         eec(stabbr, tier, wage, p),
                          0)) %>%
     # now determine retirement benefits
     mutate(early_years=pmax(p$db_aor_normal - w$aor, 0),
            early_penalty=early_years * early_penalty_per_year,
            db_benfactor=p$db_benfactor_normal - early_penalty,
-           db_pctfas=db_benfactor * w$fyos,
+           db_pctfas_uncapped=db_benfactor * w$fyos,
+           db_pctfas=pmin(db_pctfas_uncapped, p$db_max_benpct),
            ipension=w$fas * db_pctfas, # initial pension
-           db_pension=ifelse(age >= w$aor,
-                          ipension * (1 + p$db_cola)^(b$yor - 1),
-                          0)
+           db_pension2=ifelse(age >= w$aor,
+                          ipension * (1 + p$db_cola_rate)^(b$yor - 1),
+                          0),
+           db_pension_colagrown=ifelse(age >= w$aor,
+                                       p$db_cola_base * (1 + p$db_cola_rate)^(b$yor - 1),
+                                       0),
+           db_pension_base=case_when(age < w$aor ~ 0,
+                                     p$db_cola_base==0 ~
+                                       ipension * (1 + p$db_cola_rate)^(b$yor - 1),
+                                     p$db_cola_base > 0 ~ ipension,
+                                     TRUE ~ -1e99),
+           db_pension=db_pension_colagrown + db_pension_base
     ) %>%
     select(-names(b), -ipension)
   results
 }
 
 
-
 #.. DC defined contribution functions ---------------------------------------
+
 dcvalues <- function(dc_covered, w, b, p){
   # w: worker data
   # b: base
@@ -529,13 +558,15 @@ dcvalues <- function(dc_covered, w, b, p){
 
 # calculate results -------------------------------------------------------
 
+data %>% unnest(cols=params)
+
 df <- data %>%
-  filter(stabbr != "MA") %>%
+  # filter(stabbr != "MA") %>%
   rowwise() %>%
   # build a series of list-columns each of which has a dataframe from age of entry to age of death
   mutate(base=list(fbase(wdata)),
          socsec=list(fsocsec(ss_covered, wdata, base, params)),
-         pension=list(pension(db_covered, wdata, base, params)),
+         pension=list(pension(db_covered, stabbr, tier, wdata, base, params)),
          dcvalues=list(dcvalues(dc_covered, wdata, base, params)))
 df
 # glimpse(df)
@@ -556,15 +587,23 @@ tmp <- df %>%
 
 
 
-# analyze results ---------------------------------------------------------
+# summarize results ---------------------------------------------------------
 
 dr <- .04
 age0 <- 50
+year0 <- 2021
 
-pvage0 <- function(value, dr, age, age0) {
+# pvage0 <- function(value, dr, age, age0) {
+#   # pv in a given year
+#   value / {(1 + dr)^(age - age0)}
+# }
+
+pvyear0 <- function(value, dr, year, year0) {
   # pv in a given year
-  value / {(1 + dr)^(age - age0)}
-  }
+  value / {(1 + dr)^(year - year0)}
+}
+# pv=~pvage0(.x, dr, age, age0))
+# pv=~pvyear0(.x, dr, year, year0))
 
 df3 <- df %>%
   unnest(cols = c(wdata, base, socsec, pension, dcvalues)) %>%
@@ -575,15 +614,19 @@ df3 <- df %>%
   mutate(across(.cols=c(db_eec, db_pension,
                         sstax, ssbenefit,
                         dc_eec, dc_annuity),
-                list(pv=~pvage0(.x, dr, age, age0)))) %>%
+                list(pv=~pvyear0(.x, dr, year, year0)))) %>%
   ungroup %>%
   arrange(stabbr, tier, tname, worker) 
 summary(df3)  # make sure there are no NA values
 ns(df3)
 
+tmp <- df3 %>%
+  filter(db_pctfas != db_pctfas_uncapped)
+
 results <- df3 %>%
   group_by(worker, stabbr, tier, tname) %>%
   summarise(fyos=first(fyos),
+            aoe=first(aoe),
             aor=first(aor),
             aod=first(aod),
             db_pctfas=first(db_pctfas),
@@ -601,21 +644,25 @@ results <- df3 %>%
          net_retpv=net_penpv + net_sspv + net_dcpv) %>%
   arrange(worker, stabbr, tier) 
 
+
+# examine results ---------------------------------------------------------
 results %>%
-  select(worker, stabbr, tier, tname, aor, aod, contains("net"))
+  select(worker, stabbr, tier, tname, aoe, aor, aod, contains("net"))
 
 # all retirement income, including SS
 results %>%
-  select(worker, stabbr, tier, tname, aor, aod, net_retpv) %>%
+  select(worker, stabbr, tier, tname, aoe, aor, aod, net_retpv) %>%
   pivot_wider(names_from = c(tier, tname), values_from = net_retpv)
 
 # just net pension benefits (not SS)
 results %>%
-  select(worker, stabbr, tier, tname, aor, aod, net_dbdcpv) %>%
+  select(worker, stabbr, tier, tname, aoe, aor, aod, net_dbdcpv) %>%
   pivot_wider(names_from = c(tier, tname), values_from = net_dbdcpv)
 
 
-
+tmp <- df3 %>%
+  filter(worker==1, stabbr=="CA", tier=="major", tname=="poffa") %>%
+  unnest(cols=params)
 # why does net pv at age 50 fall for those who retire later? I get it for the DB plans
 # but why the dc plans?
   
