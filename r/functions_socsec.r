@@ -265,9 +265,11 @@ fsocsec <- function(ss_covered, w, b, p){
   # p: params for retirement benefit calculations
   
   if(!ss_covered){
-    # socsec <- tibble(sstax=rep(0, nrow(b)), iwage=0, pia=0, ssbenefit=0)
-    # return(socsec)
-    return(NULL)
+    socsec <- tibble(sstax=0, iwage=0, pia=0, ssbenefit=0)
+    # socsec <- tibble()
+    # tibble(sstax=rep(0, nrow(b)), iwage=0, pia=0, ssbenefit=0)
+    return(socsec)
+    # return(NULL)
   }
   
   socsec <- unnest(b, cols = c()) %>%

@@ -157,8 +157,9 @@ check <- data %>%
   # filter(stabbr != "MA") %>%
   rowwise() %>%
   # build a series of list-columns each of which has a dataframe from age of entry to age of death
-  mutate(base=list(fbase(wdata))) %>%
-  unnest(base)
+  mutate(base=list(fbase(wdata)),
+         socsec=list(fsocsec(ss_covered, wdata, base, params))) %>%
+  unnest(cols=c(base, socsec))
 
 retinc <- data %>%
   # filter(stabbr != "MA") %>%
