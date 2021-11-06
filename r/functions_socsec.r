@@ -45,7 +45,7 @@ cpifc
 
 #.. SS wage-related parameters ----
 #.... SS average wage index series and awi ----
-awi1 <- read_excel(here::here("boyd", xlfn), sheet="awiseries", range="A2:B72")
+awi1 <- read_excel(static, sheet="awiseries", range="A2:B72")
 awi <- awi1 %>%
   mutate(awi=awiseries[year==max(year)] / awiseries,
          awipch=awiseries / awiseries[match(year - 1, year)] - 1)
@@ -64,7 +64,7 @@ awifc
 
 
 #.. SS bends for the Social Security formula ----
-bends1 <- read_excel(here::here("boyd", xlfn), sheet="bends", range="A4:C48")
+bends1 <- read_excel(static, sheet="bends", range="A4:C48")
 bends1
 
 # create a forecasted series
