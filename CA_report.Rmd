@@ -27,7 +27,7 @@ editor_options:
 # -- NEVER using Knit with eval=TRUE
 # note <br> breaks line for html output but \n should break for pdf; also could try |
 
-rmdfn <- ".CA_report.rmd" # this file
+rmdfn <- "CA_report.rmd" # this file
 outfn <- paste0("report_", format(Sys.time(), "%Y-%m-%d"), ".html")
 rmarkdown::render(rmdfn, output_format="html_document", output_file=outfn)
 
@@ -80,6 +80,8 @@ library(cgwtools)  # for resave
 
 library(btools)
 library(bdata)
+
+devtools::session_info()
 ```
 
 
@@ -129,6 +131,7 @@ acsdb <- paste0(sqlitedir, acsfn, ".sql3")
 
 
 ```{r constants}
+
 # 33-3012	Correctional Officers and Jailers  OES code
 # 3802 Correctional officers and jailers 33-3012   # occ code 2018
 # NY, MA
@@ -140,6 +143,14 @@ compstates <- c("AZ", "NV", "OR", "WA", # near neighbors
                 "NY", "MA")  # large, expensive
 
 obs_cutoff <- 50
+
+#.. ACS constants ----
+acsvars_string <- "serialno, st, puma, powsp, powpuma, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp, naicsp"
+
+# define the filter definition for a worker so we  have it in only one place
+# worker <- expression(wagp >= 10e3, agep >= 18)  # haven't gotten this to work
+# sworker <- "schl > 15 & wagp >= 10e3 & agep >= 18"  # as a string - works with filter(eval(parse(text=sworker))), albeit awkward
+sworker <- "wagp >= 10e3 & agep >= 18"  # as a string - works with
 
 
 #.. graph theme items ----
@@ -153,29 +164,34 @@ source_oesres <- "U.S. Bureau of Labor Statistics, Occupational Employment and W
 source_rpp <- "U.S. Bureau of Economic Analysis Regional Price Parities"
 
 # key facts empty list
-keyfacts <- list()
+# keyfacts <- list()
 
 ```
 
 
 <!-- Get previously created data, needed in the following sections. -->
 
+```{r load_functions}
+source(here::here("r", "functions_misc.r"))
+source(here::here("r", "functions_ACS_factors.r"), echo=TRUE)
+
+```
+
+
+
 ```{r load_data}
 # load previously prepared data
-# functions
-load(file=here::here("data", "misc_functions.rdata"), verbose=TRUE)
-load(file=here::here("data", "acs_functions.rdata"), verbose=TRUE)
 
-# codes -- do I need to load the codes?
-load(file=here::here("data", "acs_constants.rdata"), verbose=TRUE)
 load(file=here::here("data", "rpp.rdata"), verbose=TRUE) # max year is 2019 for all
-acsocodes <- readRDS(here::here("data", "acsocodes.rds"))
-pumas_caxwalk <- readRDS(here::here("data", "pumas_caxwalk.rds"))
+# sarpp, marpp, and carpp with state, metro/nonmetro, and CA metro, nonmetro regional price parities
+
+acsocodes <- readRDS(here::here("data", "acsocodes.rds")) # occp and soc occupation codes and names
+pumas_caxwalk <- readRDS(here::here("data", "pumas_caxwalk.rds")) # puma to msa xwalk
 
 #.. the main data files ----
 # job categories
-job_cluster <- readRDS(here::here("data", "job_cluster.rds"))
-wpirates <- readRDS(here::here("data", "wpirates.rds"))
+job_cluster <- readRDS(here::here("data", "job_cluster.rds")) # occupation pathways and job clusters
+wpirates <- readRDS(here::here("data", "wpirates.rds")) # workplace injury rates -- DJB review
 
 # OESW
 # All states, govt
@@ -183,8 +199,8 @@ oesres_clean <- readRDS(paste0(resdir, "oesres_clean.rds"))
 oesres_sec99 <- readRDS(paste0(resdir, "oesres_sec99.rds"))
 
 # California files
-caledd_oesw <- readRDS(here::here("data", "caledd_oesw.rds"))
-load(file=here::here("data", "caloes.rdata"), verbose=TRUE)
+caledd_oesw <- readRDS(here::here("data", "caledd_oesw.rds")) # CA econ dev oesw 2009-2021
+load(file=here::here("data", "caloes.rdata"), verbose=TRUE) # cal_oes and _oescodes
 
 # ACS-based files
 corr_workers <- readRDS(here::here("data", "corr_workers.rds"))
@@ -206,14 +222,26 @@ We'd expect wages to be higher when education or experience is greater. Looking 
 # data prep
 #.. OES states data prep ----
 # OES -- construct a U.S. record
+# corr wage, emp by state, 2012-2020
 corr_oessts <- oesres_sec99 %>%
   filter(str_detect(naics_title, "State Government"), occ=="33-3012", stabbr %in% state.abb) %>%
   select(stabbr, year, occ, occname, wage=a_mean, emp=tot_emp) %>%
   mutate(caldum=stabbr=="CA")
+# we have a few small-state NA values -- be careful of 2012 and 2017
+# corr_oessts %>% filter(is.na(wage) | is.na(emp))
+#   stabbr  year occ     occname                            wage   emp caldum
+#   <chr>  <int> <chr>   <chr>                             <dbl> <dbl> <lgl> 
+# 1 ID      2012 33-3012 Correctional Officers and Jailers 30720    NA FALSE 
+# 2 ND      2012 33-3012 Correctional Officers and Jailers 35700    NA FALSE 
+# 3 VT      2012 33-3012 Correctional Officers and Jailers 37140    NA FALSE 
+# 4 RI      2017 33-3012 Correctional Officers and Jailers    NA  1080 FALSE 
 
 corr_oesus50 <- corr_oessts %>%
+  # drop any record with either wage or emp as NA
+  filter(!is.na(emp), !is.na(wage)) %>%
   group_by(year, occ, occname) %>%
   summarise(stabbr="US",
+            n=n(),
             caldum=FALSE,
             wage=wtd.mean(wage, weights = emp, na.rm=TRUE),
             emp=sum(emp, na.rm=TRUE), .groups = "drop")
@@ -224,7 +252,6 @@ corr_oes <- bind_rows(corr_oessts, corr_oesus50) %>%
   mutate(rwage = wage / rpp)
 summary(corr_oes)
 # corr_oes %>% filter(is.na(rwage))  # RI in 2017
-keyfacts$corr_oes <- corr_oes
 
 
 #.. ACS states data preparation ----
@@ -239,7 +266,8 @@ corr_workers_cut <- corr_workers %>%
 # sanity check on the rpps -- they will vary within state, by year
 corr_workers_cut %>%
   group_by(stabbr2) %>%
-  summarise(rppmin=min(rpp),
+  summarise(n=n(),
+            rppmin=min(rpp),
             rppmean=mean(rpp),
             rppmax=max(rpp))
 
@@ -282,7 +310,7 @@ corr_summary <- corr_wages %>%
   select(stabbr2, stname, dumca, n, wtdn, exp, rwagp, rppwagp, male, ltassoc) %>%
   arrange(stname)
 
-keyfacts$corr_summary <- corr_summary
+# keyfacts$corr_summary <- corr_summary
 
 ```
 
@@ -326,37 +354,49 @@ We show average wages at 2020 levels from these two sources in the two figures b
 
 ```{r include=TRUE, fig.width=6, fig.height=8}
 
-gtitle <- "State correctional officer salaries in 2020"
+pdata <- corr_oes %>%
+  filter(year==2020, stabbr != "US") %>%
+  arrange(desc(wage)) %>%
+  mutate(stname=get_stname(stabbr),
+         rank=row_number())
+
+gtitle <- "State correctional officer wages in 2020"
 gsubtitle <- NULL
-capt1 <- "Note: vertical line marks median"
+capt1 <- paste0("Note: vertical line marks median (", 
+                comma(median(pdata$wage), accuracy=1, prefix="$"),
+                ")")
 capt2 <- paste0("\nSource: ", source_oesres, ".")
 capt <- paste0("\n", capt1, "\n", str_wrap(capt2, 150))
 
-pdata <- corr_oes %>%
-  filter(year==2020, stabbr != "US") %>%
-  mutate(stname=get_stname(stabbr))
-
-
 p <- pdata %>%
   ggplot(aes(y=reorder(stname, wage), x=wage)) +
-  geom_point(aes(colour=caldum), size=1.5) +
+  geom_point(aes(colour=caldum), size=0.75) +
+  geom_col(aes(fill=caldum), size=1.5, width=0.1) +
   scale_colour_manual(values=c("blue", "red")) +
+  scale_fill_manual(values=c("blue", "red")) +
+  # geom_text(aes(x=xmoved, label=comma(x=wage, accuracy=1, prefix="$")),
+  #           hjust=0, size=2.25,
+  #           data=. %>% mutate(xmoved=ifelse(wage > median(pdata$wage), wage + 1000, wage - 5000))) +
+  # geom_text(aes(label=comma(x=wage, accuracy=1, prefix="$")),
+  #           position=position_nudge(x=ifelse(.data$wage > median(.data$wage), 1000, -1000)), 
+  #           hjust=0, size=2.25) +
+  geom_text(aes(label=comma(x=wage, accuracy=1, prefix="$")),
+            hjust=0, nudge_x=500, size=2.25,
+            data=. %>% mutate(wage=ifelse(rank <= 5, wage, NA_real_))) + #,
+            # data= . %>% mutate(wage=ifelse(wage >= 60e3, wage, NA_real_))) +
   theme_bw() +
-  labs(x="Annual wage, no adjustment for cross-state price differences", y=NULL,
+  labs(x="Average annual wage", y=NULL,
        caption=capt) +
   ggtitle(label=gtitle, subtitle = gsubtitle) +
   theme(axis.text.y = element_text(hjust = 0)) +
-  geom_vline(xintercept = median(pdata$wage)) +
-  scale_x_continuous(breaks=seq(0, 100e3, 10e3), labels=label_comma(accuracy=1, prefix="$"), limits=c(30e3, 90e3)) +
+  geom_vline(xintercept = median(pdata$wage), linetype="solid", colour="darkgrey", size=.5) +
+  scale_x_continuous(breaks=seq(0, 100e3, 10e3), labels=label_comma(accuracy=1, prefix="$"), limits=c(0, 100e3)) +
   legend_none +
   caption_left
-
 p
 
-ggsave(here::here("results", "wages_oes.png"), 
-       plot=p, width=10, height=8, scale=1.25)
+ggsave(here::here("results", "wages_oes.png"), plot=p, width=10, height=8, scale=1)
 write_csv(pdata, here::here("results", "wages_oes_data.csv"))
-
 
 ```
 
@@ -395,7 +435,7 @@ p
 
 ggsave(here::here("results", "real_wages_oes.png"), 
        plot=p, width=10, height=8, scale=1.25)
-keyfacts$real_wages_oes <- pdata
+# keyfacts$real_wages_oes <- pdata
 
 
 ```
@@ -453,7 +493,7 @@ pdata <- corr_oes %>%
   ungroup %>%
   filter(stabbr != "US")
 
-keyfacts$wages_oes_time <- pdata
+# keyfacts$wages_oes_time <- pdata
 
 cols <- c('#a6cee3','#1f78b4','black','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6')
 cols <- c('#a6cee3','red', 'black','#33a02c','#fb9a99','#1f78b4','#fdbf6f','#ff7f00','#cab2d6')
@@ -576,7 +616,7 @@ The state fixed effects are the main result we are interested in. They tell how 
 femod <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) | stabbr2,
                data=corr_workers_cut, notes=FALSE)
 # suppress note about dropping edattainother
-keyfacts$statemod <- femod
+# keyfacts$statemod <- femod
 
 
 ```
@@ -643,7 +683,7 @@ cfe <- tibble(stabbr=names(fe$stabbr2), fe=fe$stabbr2) %>%
          stname=get_stname(stabbr),
          stname=ifelse(stabbr=="other", "Small states as a group", stname),
          rank=rank(desc(cfe)))
-keyfacts$statecfe <- cfe
+# keyfacts$statecfe <- cfe
 
 gtitle <- "State correctional officer salaries relative to those in the average state"
 gsub1 <- "Controlling for experience, education, and demographic characteristics"
@@ -735,7 +775,7 @@ pdata <- oesres_clean %>%
   mutate(level=str_to_sentence(level),
          level=factor(level, levels=c("Federal", "State", "Local"))) %>%
   arrange(year, level)
-keyfacts$oesres_cafsl <- pdata
+# keyfacts$oesres_cafsl <- pdata
 
 capt <- paste0("\nSource: ", source_oesres)
 colors <- c('#e41a1c','#377eb8','#4daf4a')
@@ -868,7 +908,7 @@ tabdata <- sumstats %>%
   select(cowf, yoschool, exp, rwagp, irwagp, irppwagp) %>%
   mutate(cowf=str_to_sentence(cowf))
 
-keyfacts$cafsl_edexp <- tabdata
+# keyfacts$cafsl_edexp <- tabdata
 
 tab <- tabdata %>% 
   gt() %>%
@@ -952,7 +992,7 @@ fefsl_df <- tibble(level=names(fe$cowf), fe=fe$cowf) %>%
          level=str_to_title(level),
          level=factor(level, levels = c("State", "Local", "Federal"))) %>%
   arrange(level)
-keyfacts$fefsl_df <- fefsl_df
+# keyfacts$fefsl_df <- fefsl_df
 
 fefsl_df %>%
   select(-fe) %>%
@@ -1045,7 +1085,7 @@ cfe <- tibble(occname=names(fecamod_cluster$occgroup), fe=fecamod_cluster$occgro
   mutate(cfe=fe - mean(fe)) %>% 
   arrange(desc(cfe))
 
-keyfacts$caclustercfe <- cfe
+# keyfacts$caclustercfe <- cfe
 
 gtitle <- "California state correctional officer wages relative to private sector wages for jobs in the same occupational cluster"
 gsubtitle <- "Adjusted for Metropolitan Statistical Area (MSA) price levels, and controlling for experience, education, and demographic characteristics"
@@ -1300,7 +1340,7 @@ cfe <- tibble(occname=names(fecamod_educ$occgroup), fe=fecamod_educ$occgroup) %>
   mutate(cfe=fe - mean(fe)) %>% 
   arrange(desc(cfe))
 
-keyfacts$caeduccfe <- cfe
+# keyfacts$caeduccfe <- cfe
 
 gtitle <- "California state correctional officer wages relative to private sector wages for jobs with similar education attainment"
 gsubtitle <- "Adjusted for Metropolitan Statistical Area (MSA) price levels, and controlling for experience, education, and demographic characteristics"
@@ -1393,9 +1433,9 @@ summary(camod_educ_wpi)
 ```{r}
 # wages across states
 # nominal wages in 2020
-uswage <- keyfacts$corr_oes %>% filter(stabbr=="US", year==2020) %>% .$wage
-cawage <- keyfacts$corr_oes %>% filter(stabbr=="CA", year==2020) %>% .$wage
-mawage <- keyfacts$corr_oes %>% filter(stabbr=="MA", year==2020) %>% .$wage
+# uswage <- keyfacts$corr_oes %>% filter(stabbr=="US", year==2020) %>% .$wage
+# cawage <- keyfacts$corr_oes %>% filter(stabbr=="CA", year==2020) %>% .$wage
+# mawage <- keyfacts$corr_oes %>% filter(stabbr=="MA", year==2020) %>% .$wage
 
 # gap vs. U.S. in nominal wages
 gap2016 <- keyfacts$wages_oes_time %>% filter(stabbr=="CA", year==2016) %>% .$pdwage
@@ -1514,17 +1554,6 @@ locoed_cfe <- keyfacts$caeduccfe %>% filter(str_detect(occname, "Locomotive engi
 
 NOTE to self: Only run when data or methods change.
 
-```{r functions_misc, eval=FALSE}
-get_stname <- function(stabbr){
-  sts <- c("US", "DC", state.abb)
-  allnames <- c("United States", "District of Columbia", state.name)
-  allnames[match(stabbr, sts)]
-}
-
-save(get_stname, file=here::here("data", "misc_functions.rdata"))
-# load(file=here::here("data", "misc_functions.rdata"), verbose=TRUE)
-
-```
 
 ## Regional price measures
 
@@ -2122,17 +2151,6 @@ This section defines variables to pull from the ACS, and what a "worker" is:
 
 We need to define a worker for purposes of comparing correctional officer wages to those of other workers. The definition here is based largely on definitions used in academic papers that estimate wage regressions.
 
-```{r acs_worker}
-acsvars_string <- "serialno, st, puma, powsp, powpuma, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp, naicsp"
-
-# define the filter definition for a worker so we  have it in only one place
-# worker <- expression(wagp >= 10e3, agep >= 18)  # haven't gotten this to work
-# sworker <- "schl > 15 & wagp >= 10e3 & agep >= 18"  # as a string - works with filter(eval(parse(text=sworker))), albeit awkward
-sworker <- "wagp >= 10e3 & agep >= 18"  # as a string - works with
-
-save(acsvars_string, sworker, file=here::here("data", "acs_constants.rdata"))
-
-```
 
 #### Get a crosswalk of occupation codes
 
@@ -2167,173 +2185,11 @@ This section has functions that develop variables that will serve as controls in
 -   Educational attainment is collapsed into
 -   Work experience is calculated as age minus years of schooling minus 6
 
-```{r acs_factors}
-
-#.. COW Character 1 ----
-# Class of worker
-# b .Not in universe (less than 16 years old/NILF who last worked .more than 5 years ago or never worked)
-# 1 .Employee of a private for-profit company or business, or of an .individual, for wages, salary, or commissions
-# 2 .Employee of a private not-for-profit, tax-exempt, or .charitable organization
-# 3 .Local government employee (city, county, etc.)
-# 4 .State government employee
-# 5 .Federal government employee
-# 6 .Self-employed in own not incorporated business, professional .practice, or farm
-# 7 .Self-employed in own incorporated business, professional .practice or farm
-# 8 .Working without pay in family business or farm
-# 9 .Unemployed and last worked 5 years ago or earlier or never .worked
-
-f_cow <- function(cow){
-  levs <- 1:9
-  labs <- c("Private, for profit",
-            "Private, not for profit",
-            "Local government",
-            "State government",
-            "Federal government",
-            "Self-employed, unincorporated",
-            "Self-employed, incorporated",
-            "Unpaid family or farm",
-            "Unemployed 5+ years")
-  # cbind(levs, labs)
-  factor(cow, levels=levs, labels=labs)
-}
-
-#.. MAR Character 1 ----
-# Marital status
-# 1 .Married
-# 2 .Widowed
-# 3 .Divorced
-# 4 .Separated
-# 5 .Never married or under 15 years old
-
-f_marstat <- function(mar){
-  factor(mar,
-         levels=1:5,
-         labels=c("married", "widowed", "divorced", "separated", "neverM"))
-}
-
-
-#.. RAC1P Character 1 ----
-# Recoded detailed race code
-# 1 .White alone
-# 2 .Black or African American alone
-# 3 .American Indian alone
-# 4 .Alaska Native alone
-# 5 .American Indian and Alaska Native tribes specified; or .American Indian or
-# Alaska Native, not specified and no other races
-# 6 .Asian alone
-# 7 .Native Hawaiian and Other Pacific Islander alone
-# 8 .Some Other Race alone
-# 9 .Two or More Races
-
-f_race_hisp <- function(rac1p, hisp) {
-  # hisp==1 is NOT hispanic
-  y <- ifelse(hisp==1, rac1p, 0)
-  y <- factor(y)
-  levels(y) <- list("White alone, not Hispanic"=1, 
-                    "Black alone, not Hispanic"=2,
-                    "Hispanic, any race"=0,
-                    "Asian alone, not Hispanic"=6,
-                    "Other or multiple race, not Hispanic"=c(3:5, 7:9))
-  return(y)
-}
-
-#.. SCHL Character 2 ----
-# Educational attainment
-# bb .N/A (less than 3 years old)
-# 01 .No schooling completed
-# 02 .Nursery school, preschool
-# 03 .Kindergarten
-# 04 .Grade 1
-# 05 .Grade 2
-# 06 .Grade 3
-# 07 .Grade 4
-# 08 .Grade 5
-# 09 .Grade 6
-# 10 .Grade 7
-# 11 .Grade 8
-# 12 .Grade 9
-# 13 .Grade 10
-# 14 .Grade 11
-# 15 .12th grade - no diploma
-# 16 .Regular high school diploma
-# 17 .GED or alternative credential
-
-# 18 .Some college, but less than 1 year
-# 19 .1 or more years of college credit, no degree
-
-# 20 .Associate's degree
-# 21 .Bachelor's degree
-# 22 .Master's degree
-# 23 .Professional degree beyond a bachelor's degree
-# 24 .Doctorate degree
-
-f_yoschool <- function(schl, agep){
-  # estimate years of schooling based on educational attainment
-  yoschool <- case_when(schl <= 14 ~ 12,  # no higher than 11th grade -- give them 11 years
-                      schl %in% 15:17 ~ 12,  # 12th grade, HS diploma or alternative
-                      schl %in% 18:19 ~ 13,  # +/- another year
-                      schl == 20 ~ 14,  # associate's
-                      schl == 21 ~ 16,  # bachelor's
-                      schl == 22 ~ 18,  # master's -- 2 years?
-                      schl == 23 ~ 19,  # professional degree
-                      schl == 24 ~ 20,  # doctorate
-                      TRUE ~ NA_real_)
-  ifelse(yoschool > agep - 6,
-         agep - 6,
-         yoschool)
-}
-
-
-f_edattain <- function(schl){
-  edattain <- case_when(schl <= 15 ~ "notHSgrad",
-                        schl %in% 16:17 ~ "HSgrad",
-                        schl %in% 18:19 ~ "HSplus",
-                        schl == 20 ~ "associate",
-                        schl == 21 ~ "BA",
-                        schl %in% 22:24 ~ "MAplus",
-                        TRUE ~ "other")
-    # put edattain values in desired order
-    edattain <- factor(
-             edattain,
-             levels=c("HSgrad", "HSplus", "associate", "BA", "MAplus", "notHSgrad", "other"))
-    # make hsgrad first in sorts??
-    edattain
-}
-# f_edattain(11)
-
-
-
-f_create_vars <- function(df){
-  # create multiple new variables for df
-  # df has acs variables
-  df %>%
-    mutate(year=str_sub(serialno, 1, 4) %>% as.integer,
-           adjinc=adjinc / 1e6,
-           rwagp=wagp * adjinc,
-           yoschool=f_yoschool(schl, agep),
-           ltassoc=schl < 20,
-           agep2=agep^2,
-           exp=agep - yoschool - 6,
-           exp2=exp^2,
-           lrwagp=log(rwagp),
-           sex=factor(sex, levels=1:2, labels=c("male", "female")),
-           rachisp=f_race_hisp(rac1p, hisp),
-           edattain=f_edattain(schl),
-           marstat=f_marstat(mar))
-  }
-
-# tmp <- df1 %>% mutate(create_vars(.))
-save(f_cow, f_marstat, f_race_hisp, f_yoschool, f_edattain, f_create_vars,
-     file=here::here("data", "acs_functions.rdata"))
-
-```
-
 ### Create ACS data subsets to be used in the analysis
 
 ```{r connect_acsdb}
-
-load(file=here::here("data", "acs_constants.rdata"), verbose=TRUE)
-load(file=here::here("data", "acs_functions.rdata"), verbose=TRUE)
+# make sure to have sourced the functions files first
+# and defined constants
 
 # dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
 db <- dbConnect(SQLite(), dbname=acsdb)
