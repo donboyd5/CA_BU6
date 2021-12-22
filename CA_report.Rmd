@@ -12,9 +12,10 @@ output:
     toc_float: true
     number_sections: yes
 editor_options:
-  chunk_output_type: inline
+  chunk_output_type: console
 ---
 
+# Preparation
 ```{r links}
 # https://download.bls.gov/pub/time.series/cm/
 # NCS: https://download.bls.gov/pub/time.series/nb/
@@ -38,7 +39,6 @@ rmarkdown::render(rmdfn, output_format="html_document", output_file=outfn)
 # and include repetitive information in the output html file.
 
 ```
-
 
 ```{r setup, include=FALSE, eval=TRUE}
 knitr::opts_chunk$set(echo = FALSE, include=FALSE, eval=TRUE, message = FALSE, warning = FALSE,
@@ -75,8 +75,12 @@ library(ggbreak)
 library(patchwork)
 library(RColorBrewer)
 
+library(fredr)
+
+# econometrics
 library(fixest)
-library(cgwtools)  # for resave
+library(fable)
+# library(cgwtools)  # for resave
 
 library(btools)
 library(bdata)
@@ -98,12 +102,6 @@ The goals of this project are to address two main questions in relation to Calif
     In doing this, adjust for regional cost differences to the extent practical. Pay attention to the fact that salaries and benefits of new hires have changed in recent years.
 
 -   What are the leverage points -- the key methodological and data choices that might influence what a new CalHR study would conclude?
-
-
-For key conclusions see [the key conclusions section](#conclusions), or look for sections in the table of contents where the header includes "Key result" or "Key data".
-
-There is an extensive appendix on data preparation that mostly serves as documentation.
-
 
 ```{r locations}
 # acsdir <- r"(E:\data\acs\)"
@@ -128,7 +126,6 @@ acsfn <- "acs2019_5year"
 acsdb <- paste0(sqlitedir, acsfn, ".sql3")
 
 ```
-
 
 ```{r constants}
 
@@ -162,12 +159,12 @@ caption_left <- theme(plot.caption = element_text(hjust = 0))
 source_acs <- "U.S. Bureau of the Census, American Community Survey, 2015-2019 PUMS"
 source_oesres <- "U.S. Bureau of Labor Statistics, Occupational Employment and Wage Statistics Research Database"
 source_rpp <- "U.S. Bureau of Economic Analysis Regional Price Parities"
+source_wpi <- "U.S. Bureau of Labor Statistics, Survey of Occupational Injuries and Illnesses"
 
 # key facts empty list
 # keyfacts <- list()
 
 ```
-
 
 <!-- Get previously created data, needed in the following sections. -->
 
@@ -178,9 +175,815 @@ source(here::here("r", "functions_ACS_factors.r"), echo=TRUE)
 ```
 
 
+# ONETIME DATA CREATION
 
+## Price measures
+
+### National price indexes
+```{r ONETIME_gdppi_cpi}
+
+fred_apikey <- "a5e1199baac333154cbffcba3b263c28"
+fredr_set_key(fred_apikey)
+
+# Gross domestic product (chain-type price index)
+# FRED https://fred.stlouisfed.org/series/A191RG3A086NBEA
+price <- fredr("A191RG3A086NBEA", frequency = "a")
+gdppi <- price %>%
+  rename(gdppi=value) %>%
+  mutate(year=year(date),
+         igdppi=gdppi[year==2020] / gdppi) %>%
+  select(year, gdppi, igdppi)
+saveRDS(gdppi, here::here("data", "gdppi.rds"))
+
+# CPI 2015=100
+# https://fred.stlouisfed.org/series/CPALTT01USA661S
+cpi <- fredr("CPALTT01USA661S", frequency = "a") %>%
+  rename(cpi=value) %>%
+  mutate(year=year(date),
+         icpi=cpi[year==2020] / cpi) %>%
+  select(year, cpi, icpi) %>%
+  filter(!is.na(cpi))
+saveRDS(cpi, here::here("data", "cpi.rds"))
+
+```
+
+### Regional price measures
+
+This section:
+
+-   Gets regional price parity indexes (i.e., regional price indexes) from the [Bureau of Economic Analysis](https://apps.bea.gov/regional/downloadzip.cfm) (BEA) for states, Metropolitan Statistical Areas (MSAs), and the metro-nonmetro areas of individual states, for all available years (2008-2019).
+-   Parses the data and saves for later use.
+
+We need these data because we want to adjust for regional price differences when comparing correctional officer salaries across states, and when comparing these salaries to private sector salaries in different regions of California.
+
+```{r rpp_info}
+
+# https://apps.bea.gov/regional/downloadzip.cfm
+# SARPP.zip is states
+# MARPP.zip is metropolitan areas
+# PARPP.zip is metro/non-metro areas within states
+
+
+# https://www.bea.gov/news/2020/real-personal-income-state-and-metropolitan-area-2019
+# Regional Price Parities in 2019
+# 
+# Regional price parities (RPPs) measure the differences in price levels across states and metropolitan areas for a given year and are expressed as a percentage of the overall national price level. The all items RPP covers all consumption goods and services, including housing rents. Areas with high/low RPPs typically correspond to areas with high/low price levels for rents.
+# 
+# States with the highest RPPs were Hawaii (119.3), California (116.4), and New York (116.3) (table 3).
+# States with the lowest RPPs were Mississippi (84.4), Arkansas (84.7), and Alabama (85.8).
+# Across states, California had the highest RPP for housing rents (153.6), and Mississippi had the lowest (60.0).
+# Large metropolitan areas with the highest RPPs were San Francisco-Oakland-Berkeley, CA (134.5), New York-Newark-Jersey City, NY-NJ-PA (125.7), and Los Angeles-Long Beach-Anaheim, CA (118.8) (table 6).
+# Large metropolitan areas with the lowest RPPs were Cleveland-Elyria, OH (89.9), St. Louis, MO-IL (90.1), and Cincinnati, OH-KY-IN (90.6).
+# Across large metropolitan areas, San Francisco-Oakland-Berkeley, CA, had the highest RPP for housing rents (200.3), and Cleveland-Elyria, OH, had the lowest (76.3).
+# Across all metropolitan areas, San Jose-Sunnyvale-Santa Clara, CA, had the highest RPP for housing rents (224.0), and Beckley, WV, had the lowest (44.0).
+```
+
+
+```{r ONETIME_get_rpp, eval=FALSE}
+# https://www.bea.gov/data/prices-inflation/regional-price-parities-state-and-metro-area
+# 12/21/2021 I downloaded the files by hand because I could not find static urls
+mpath <- here::here("data_raw", "MARPP.zip")
+ppath <- here::here("data_raw", "PARPP.zip")
+spath <- here::here("data_raw", "SARPP.zip")
+unzip(mpath, list=TRUE) # MARPP_MSA_2008_2020.csv
+unzip(ppath, list=TRUE) # PARPP_PORT_2008_2020.csv # metro / non-metro PORTions
+unzip(spath, list=TRUE) # SARPP_STATE_2008_2020.csv
+
+
+#.. state regional price parities ----
+# read directly from zip file
+sarpp1 <- read_csv(unz(spath,
+                    "SARPP_STATE_2008_2020.csv"), 
+                col_types = cols(.default = "c"))
+
+#.... save data for CA for purposes of report text ----
+tab <- sarpp1 %>%
+  filter(GeoName=="California") %>%
+  select(GeoName, LineCode, Description, `2015`:`2020`) %>%
+  gt()
+gtsave(tab, filename="ca_rpp.png", path=here::here("results"))
+
+sarpp2 <- sarpp1 %>%
+  filter(LineCode=="1") %>%
+  mutate(stfips=str_sub(GeoFIPS, 1, 2)) %>%
+  left_join(stcodes %>% select(stfips, stabbr), by = "stfips")
+sarpp2 %>% select(stfips, stabbr, GeoName)
+  
+sarpp <- sarpp2 %>%
+  pivot_longer(cols=`2008`:`2020`, names_to = "year", values_to = "rpp") %>%
+  mutate(stfips=as.integer(stfips), year=as.integer(year), rpp=as.numeric(rpp) / 100) %>%
+  select(stabbr, stfips, year, rpp)
+
+#.. metropolitan area indexes ----
+marpp1 <- read_csv(unz(mpath,
+                    "MARPP_MSA_2008_2020.csv"), 
+                col_types = cols(.default = "c"))
+
+marpp <- marpp1 %>%
+  filter(LineCode=="1") %>%
+  pivot_longer(cols=`2008`:`2020`, names_to = "year", values_to = "rpp") %>%
+  mutate(fips=as.integer(GeoFIPS), 
+         year=as.integer(year), 
+         rpp=as.numeric(rpp) / 100) %>%
+  select(fips, geoname=GeoName, year, rpp)
+
+#.. metro-nonmetro by state price indexes ----
+zname <- "PARPP.zip"
+fn <- "PARPP_PORT_2008_2019.csv"
+con <- unz(paste0(rppdir, zname), fn) # read directly from zip file
+df <- read_csv(con, col_types = cols(.default = "c"))
+glimpse(df)
+
+parpp1 <- read_csv(unz(ppath,
+                    "PARPP_PORT_2008_2020.csv"), 
+                col_types = cols(.default = "c"))
+
+parpp <- parpp1 %>%
+  filter(LineCode=="1") %>%
+  pivot_longer(cols=`2008`:`2020`, names_to = "year", values_to = "rpp") %>%
+  mutate(type=case_when(str_sub(GeoFIPS, 3, 5)=="998" ~ "metro",
+                        str_sub(GeoFIPS, 3, 5)=="999" ~ "nonmetro",
+                        str_sub(GeoFIPS, 3, 5)=="000" ~ "US",
+                        TRUE ~ "ERROR"),
+         stfips=str_sub(GeoFIPS, 1, 2),
+         year=as.integer(year), 
+         rpp=as.numeric(rpp) / 100) %>%
+  left_join(stcodes %>% select(stfips, stabbr), by = "stfips") %>%
+  mutate(stfips=as.integer(stfips)) %>%
+  select(stfips, stabbr, geoname=GeoName, type, year, rpp)
+
+#.. which metropolitan areas are in California ----
+carpp <- marpp %>%
+  filter(str_detect(geoname, coll("CA"))) %>%
+  mutate(stabbr="CA", type="metro") %>%
+  bind_rows(parpp %>%
+              filter(type=="nonmetro", stabbr=="CA") %>%
+              select(stabbr, geoname, type, year, rpp))
+count(carpp, fips, geoname)
+
+
+# create a lagyear variable for each file so that we can merge against 1 year earlier
+sarpp <- sarpp %>% mutate(yearplus1=year + 1)
+marpp <- marpp %>% mutate(yearplus1=year + 1)
+carpp <- carpp %>% mutate(yearplus1=year + 1)
+
+save(sarpp, marpp, carpp, file=here::here("data", "rpp.rdata"))
+
+
+# There are 26 Californial regional price indexes
+# fips  geoname                                                                  n
+#    <chr> <chr>                                                                <int>
+#  1 12540 Bakersfield, CA (Metropolitan Statistical Area)                         12
+#  2 17020 Chico, CA (Metropolitan Statistical Area)                               12
+#  3 20940 El Centro, CA (Metropolitan Statistical Area)                           12
+#  4 23420 Fresno, CA (Metropolitan Statistical Area)                              12
+#  5 25260 Hanford-Corcoran, CA (Metropolitan Statistical Area)                    12
+#  6 31080 Los Angeles-Long Beach-Anaheim, CA (Metropolitan Statistical Area)      12
+#  7 31460 Madera, CA (Metropolitan Statistical Area)                              12
+#  8 32900 Merced, CA (Metropolitan Statistical Area)                              12
+#  9 33700 Modesto, CA (Metropolitan Statistical Area)                             12
+# 10 34900 Napa, CA (Metropolitan Statistical Area)                                12
+# 11 37100 Oxnard-Thousand Oaks-Ventura, CA (Metropolitan Statistical Area)        12
+# 12 39820 Redding, CA (Metropolitan Statistical Area)                             12
+# 13 40140 Riverside-San Bernardino-Ontario, CA (Metropolitan Statistical Area)    12
+# 14 40900 Sacramento-Roseville-Folsom, CA (Metropolitan Statistical Area)         12
+# 15 41500 Salinas, CA (Metropolitan Statistical Area)                             12
+# 16 41740 San Diego-Chula Vista-Carlsbad, CA (Metropolitan Statistical Area)      12
+# 17 41860 San Francisco-Oakland-Berkeley, CA (Metropolitan Statistical Area)      12
+# 18 41940 San Jose-Sunnyvale-Santa Clara, CA (Metropolitan Statistical Area)      12
+# 19 42020 San Luis Obispo-Paso Robles, CA (Metropolitan Statistical Area)         12
+# 20 42100 Santa Cruz-Watsonville, CA (Metropolitan Statistical Area)              12
+# 21 42200 Santa Maria-Santa Barbara, CA (Metropolitan Statistical Area)           12
+# 22 42220 Santa Rosa-Petaluma, CA (Metropolitan Statistical Area)                 12
+# 23 44700 Stockton, CA (Metropolitan Statistical Area)                            12
+# 24 46700 Vallejo, CA (Metropolitan Statistical Area)                             12
+# 25 47300 Visalia, CA (Metropolitan Statistical Area)                             12
+# 26 49700 Yuba City, CA (Metropolitan Statistical Area)                           12
+
+```
+
+
+## Occupational Employment and Wage Statistics (OES or OESW)
+
+This section downloads, parses, and saves:
+
+-   [OES research data](https://www.bls.gov/oes/current/oes_research_estimates.htm) for the government sector, many years. This has the advantage of breaking out ownership (state, local government), by state, by detailed occupation, for many years.
+
+```{r ONETIME_bls_research_corr, eval=FALSE}
+# https://www.bls.gov/oes/current/oes_research_estimates.htm
+# The OEWS program provides wage and employment estimates by state and industry
+# beginning with the May 2012 reference period. These estimates are intended for
+# research purposes, and users should be aware of the limitations of the data.
+# Estimates prior to May 2012 are not available. Estimates are only available
+# for states; industry-specific estimates for metropolitan areas are not
+# available. Estimates are only available for detail and major occupation
+# groups; industry-specific estimates for broad and minor occupation groups are
+# not available.
+
+urlbase <- "https://www.bls.gov/oes/special.requests/"
+
+stcodes
+# Add Guam to stcodes
+stcodes2 <- bind_rows(stcodes,
+                      tibble(stabbr="GU", stfips="66", stname="Guam"))
+
+#.. All NAICS sectors for 2016-2020 ----
+# clean up and slim down the externally created file
+oesres1 <- readRDS(paste0(resdir, "oesres_allsectors.rds"))
+glimpse(oesres1)
+count(oesres1, stabbr, area, area_title)
+count(oesres1, annual) # 24641=1, 4.5m=NA  # record does not have hourly data
+count(oesres1, hourly)  # record does not have annual data
+count(oesres1, o_group)  # for some years, tells whether it is detailed, major, total, or something else
+count(oesres1, group) # same
+count(oesres1, group, o_group)
+count(oesres1, i_group)
+
+
+oesres2 <- oesres1 %>%
+  filter(stabbr %in% c("DC", state.abb)) %>%
+  mutate(ogroup=ifelse(is.na(o_group), group, o_group)) %>%
+  select(stabbr, year, occ, occname, ogroup,
+         igroup=i_group, naics, naicstitle=naics_title, 
+         emp=tot_emp, hmean=h_mean, amean=a_mean)
+count(oesres2, ogroup)
+
+count(oesres2, naics, naicstitle)
+
+# assign level to corrections
+f_corrlevel <- function(occ, naics){
+  case_when(occ != "33-3012" ~ NA_character_,
+            naics %in% c("99", "999000") ~ "fslg",
+            naics == "999100" ~ "federal",
+            naics == "999200" ~ "state",
+            naics == "999300" ~ "local",
+            TRUE ~ "private")
+  }
+
+oesres3 <- oesres2 %>%
+  mutate(level=f_corrlevel(occ, naics))
+count(oesres3, level)
+
+saveRDS(oesres3, paste0(resdir, "oesres_clean.rds"))
+
+```
+
+### California EDD OESW data for California
+
+```{r caledd_oesw, eval=FALSE}
+# from open data
+url <- "https://data.edd.ca.gov/api/views/pwxn-y2g5/rows.csv?accessType=DOWNLOAD"
+fn <- "Occupational_Employment_and_Wage_Statistics__OEWS_.csv"
+# download.file(url, paste0(oeswcad, fn), mode="wb")  # only download if data base changed
+
+df1 <- read_csv(paste0(oeswcad, fn), col_types=cols(.default = "c"))
+glimpse(df1)
+summary(df1)
+
+df2 <- df1 %>%
+  select(atype=1, aname=2, year=3, qtr=4, indname=5, soc=6, occname=7, wtype=8, emp=9, wage=10)
+count(df2, atype) # 4
+# California-Statewide	1598			
+# California - Statewide	19438			
+# Metropolitan Area	355428			
+# OES Survey Region	38744	
+count(df2, atype, aname)  # 43
+count(df2, indname)  # 1, all industries
+count(df2, soc, occname)  # 1,110
+count(df2, wtype)  # 2 Annual wage or salary, Hourly wage
+count(df2, qtr)  # only 1
+
+# qy(1, 2000) qtr <- c("1", "2") year <- c("2000", "2001") btools::qy(as.integer(qtr), as.integer(year))
+
+df3 <- df2 %>%
+  filter(str_detect(wtype, "Annual")) %>%
+  select(atype, aname, year, soc, occname, emp, wage) %>%
+  mutate(year=as.integer(year),
+         emp=as.numeric(emp),
+         wage=as.numeric(wage),
+         soc=ifelse(soc=="0",
+                    soc,
+                    paste0(str_sub(soc, 1, 2), "-", str_sub(soc, 3, -1))))
+count(df3, soc, occname)
+
+# fix some errors in the data!
+df4 <- df3 %>%
+  # wow! shouldn't have to fix this
+  mutate(emp=ifelse(emp==0, NA_real_, emp),
+         wage=ifelse(wage==0, NA_real_, wage),
+         occname=str_replace(occname, coll(" **"), ""),
+         occname=str_replace(occname, coll("*"), ""))
+
+diffnames <- df4 %>%
+  select(soc, year, occname) %>%
+  distinct() %>%
+  group_by(soc) %>%
+  mutate(nnames=length(unique(occname))) %>%
+  ungroup %>%
+  filter(nnames > 1) %>%
+  arrange(soc, year)
+
+# get most recent occname for each code
+df5 <- df4  %>%
+  group_by(soc) %>%
+  mutate(mroccname=unique(occname[year==max(year)])) %>%
+  ungroup
+
+check <- df5 %>% filter(mroccname != occname)
+
+caledd_oesw <- df5 %>%
+  select(atype, aname, year, soc, occname=mroccname, emp, wage)
+saveRDS(caledd_oesw, here::here("data", "caledd_oesw.rds"))
+
+```
+
+
+## American Community Survey (ACS) data preparation
+
+This section has two subsections:
+
+-   Preparation of codes needed for use with the ACS
+-   Preparation of the two main ACS data subsets used in the analysis, extracting relevant information from an SQLITE database of the ACS. This program does not get the full ACS - I did that in a separate program that downloaded the ACS and created the SQLITE database. That was done separately because of the size of the ACS.
+
+### Preparation of ACS codes
+
+#### Define a "worker"
+
+This section defines variables to pull from the ACS, and what a "worker" is:
+
+-   The 2015-2019 ACS is a sample of approximately 15 million people nationally.
+-   Only some of them are workers (some are children, some are retired, some are prisoners, some are unemployed, etc.)
+-   Currently I define a worker as someone who:
+-   Is an employee of a private not-for-profit or for-profit entity, or a federal, state, or local government employee. I exclude anyone who is self-employed, or working without pay on a family business or farm, or was unemployed; and
+-   Is at least 18 years old
+-   Earned at least $10,000
+
+We need to define a worker for purposes of comparing correctional officer wages to those of other workers. The definition here is based largely on definitions used in academic papers that estimate wage regressions.
+
+
+#### Get a crosswalk of occupation codes
+
+This section:
+
+-   Gets a [crosswalk](https://www2.census.gov/programs-surveys/acs/tech_docs/pums/code_lists/ACSPUMS2015_2019CodeLists.xlsx) between occupation codes used by the Bureau of the Census in the ACS and the somewhat more detaled occupation codes maintained by the Bureau of Labor Statistics and also CalHR (California Human Resources)
+-   Parses and saves the data for later use.
+
+We need this crosswalk so that we can (a) identify correctional officers and people in other occupations, and (b) collapse identify selected occupations that are similar in some way to correctional officers.
+
+```{r acs_occ_codes, eval=FALSE}
+acsocodes1 <- read_excel(paste0(pumsdocs, fnpumscodes),
+                      sheet="OCCP & SOCP",
+                      range="A11:C881",
+                      col_names=c("occp", "soc", "occname"))
+acsocodes <- acsocodes1 %>%
+  filter(nchar(occp)==4) %>%
+  mutate(occp=as.integer(occp))
+
+saveRDS(acsocodes, here::here("data", "acsocodes.rds"))
+
+# https://www.labormarketinfo.edd.ca.gov/OccGuides/detail.aspx?Soccode=518031&Geography=0601000000
+
+```
+
+### PUMA-MSA crosswalk for California
+
+This section:
+
+-   Gets a [crosswalk](https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls) from [IPUMS USA](https://usa.ipums.org/) between:
+-   Public Use Microdata Areas (PUMAs), relatively small geographic areas defined for and used in the Census Bureau's American Community Survey (ACS) that is rarely used outside of the ACS; (there are 265 PUMAs in California)l and
+-   Metropolitan Statistical Areas, larger and more-widely known geographic areas; (there are 26 MSAs in California);
+-   Parses the data
+-   Creates a California subset, and
+-   Saves for later use
+
+We need such a crosswalk for two reasons:
+
+-   We only have BEA regional price indexes for MSAs, not for PUMAs. ACS microdata identifies the PUMA for each person in the file, but not their MSA. Thus, we need a way to map the 265 California PUMAs in the ACS to the 26 California MSAs, so that we can get the MSA regional price index for each person in the data.
+-   There are relatively few observations in some PUMAs for some occupational categories. Thus, the geographically larger MSAs can be more useful for substate regional analyses in California than the PUMAs. Plus, MSAs are more familiar to most people than are PUMAs.
+
+```{r acs_pumas_notes}
+# https://www.census.gov/programs-surveys/geography/guidance/geo-areas/pumas.html
+# Public Use Microdata Areas (PUMAs) are non-overlapping, statistical geographic
+# areas that partition each state or equivalent entity into geographic areas
+# containing no fewer than 100,000 people each. They cover the entirety of the
+# United States, Puerto Rico, Guam, and the U.S. Virgin Islands. The Census
+# Bureau defines PUMAs for the tabulation and dissemination of decennial census
+# and American Community Survey (ACS) Public Use Microdata Sample (PUMS) data.
+# Additionally, the ACS and Puerto Rico Community Survey use them to disseminate
+# their respective period estimates.
+
+# The delineation of new PUMAs occurs after the completion of the decennial
+# census as part of a program involving the State Data Centers (SDCs). Decennial
+# census population counts and updated census tracts are critical inputs into
+# the delineation process.
+
+# PUMA Character 5 Public use microdata area code (PUMA) based on 2010 Census
+# definition (areas with population of 100,000 or more, use with ST for unique
+# code) 00100..70301 .Public use microdata area codes
+
+# https://www2.census.gov/geo/docs/reference/puma/
+# https://www2.census.gov/geo/docs/reference/puma/2010_PUMA_Names.txt
+
+# https://www.brookings.edu/wp-content/uploads/2018/07/ES_THP_071018_where_work_pays_tech_appendix.pdf
+# IPUMS has created a crosswalk between PUMAs and metropolitan statistical areas
+# (MSAs) that denotes what percent of a given PUMA is in a given MSA. We use
+# this crosswalk to group PUMAs into metropolitan areas and state
+# non-metropolitan areas. An individual is characterized as living in a MSA if
+# they live in a PUMA that is more than 50% in that MSA. They are classified as
+# living in a state nonmetropolitan area if they live in a PUMA that is less
+# than 50% in any metropolitan area. All states except for Delaware, New Jersey,
+# and Rhode Island (and the District of Columbia) have non-metropolitan areas.
+
+# PUMAs to MSAs -- looks like 24-26 MSAs
+# https://usa.ipums.org/usa-action/variables/met2013#description_section
+# https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls
+# https://rdrr.io/github/greaterlouisvilleproject/glptools/man/MSA_PUMA.html
+
+
+# PUMAs to counties -- 58 counties
+# https://www.psc.isr.umich.edu/dis/data/resource/detail/1527.html
+# https://www.psc.isr.umich.edu/dis/workshop/utilities/p2c.html
+# https://www.psc.isr.umich.edu/dis/data/resource/detail/1528.html
+# https://www.psc.isr.umich.edu/dis/workshop/utilities/p2c.html
+# Three additional fields are output:  the five‐digit FIPS county code, county name, and total county population based on the PUMA populations given in the p2c.equ cross‐walk file.
+
+```
+
+```{r acs_pumas_caxwalk, eval=FALSE}
+# https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls
+pumasdir <- r"(E:\data\acs\pums\pumas\)"
+pfn <- "MSA2013_PUMA2010_crosswalk.xls"
+
+# MSA Code	MSA Title	State FIPS Code	State Name	PUMA Code	PUMA Name	MSA 2010 Population	PUMA 2010 Population	Intersection 2010 Population	Percent MSA Population	Percent PUMA Population
+
+pumamsa1 <- read_excel(paste0(pumasdir, pfn)) 
+names(pumamsa1)
+pumamsa2 <- pumamsa1 %>%
+  setNames(c("msacode", "msaname", "stfips", "stname", "puma", "pumaname",
+             "msapop", "pumapop", "interpop",
+             "pctmsa", "pctpuma")) 
+# do we assign any puma to more than one msa??
+dups <- pumamsa2 %>%
+  group_by(puma, pumaname) %>%
+  mutate(n=n()) %>%
+  ungroup %>%
+  filter(n > 1) %>%
+  arrange(puma, pumaname, desc(interpop)) 
+
+pumamsa3 <- pumamsa2 %>%
+  # for each puma, keep only the msa to which it has the most assigned pop (interpop)
+  # so that we assign 1 and only 1 msa for each puma %>%
+  arrange(stfips, puma, pumaname, desc(interpop)) %>%
+  group_by(puma, pumaname) %>%
+  filter(row_number()==1) %>%
+  ungroup %>%
+  mutate(across(c(stfips, puma, msacode), as.integer))
+
+pumas_caxwalk <- pumamsa3 %>%
+  filter(stfips==6)
+
+# how far off are we?
+pumas_caxwalk %>%
+  group_by(msacode, msaname) %>%
+  summarise(msapop=first(msapop),
+            pumasum=sum(interpop),
+            .groups = "drop") %>%
+  mutate(pdiff=pumasum / msapop -1) %>%
+  arrange(-abs(pdiff)) # almost perfect
+
+saveRDS(pumas_caxwalk, here::here("data", "pumas_caxwalk.rds"))
+
+```
+
+
+#### Define other ACS codes
+
+This section has functions that develop variables that will serve as controls in regression equations, generally by collapsing detailed ACS variables into more-aggregated categories. For example, it:
+
+-   Race and ethnicity variables are collapsed from 9 race categories by multiple ethnic categories into a single variable with 5 categories
+-   Years of schooling is calculated
+-   Educational attainment is collapsed into
+-   Work experience is calculated as age minus years of schooling minus 6
+
+### Create ACS data subsets to be used in the analysis
+
+```{r connect_acsdb}
+# make sure to have sourced the functions files first
+# and defined constants
+
+# dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
+db <- dbConnect(SQLite(), dbname=acsdb)
+
+```
+
+#### Create subset representing all state correctional workers in the U.S.
+
+This subset has approximately 9,800 observations.
+
+We construct real wages for each worker by using the BEA state-level regional price parity index for the state for the relevant year of the person sampled (one of 2015-2019).
+
+```{r acs_corrections_US, eval=FALSE}
+# get all state government corrections officers in the US
+corr_sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE occp=3802") # 10 secs
+system.time(corr_base <- collect(tbl(db, sql(corr_sqlcmd))))  # 3 secs
+glimpse(corr_base) # 21,989 obs
+summary(corr_base)
+count(corr_base, st)
+count(corr_base, puma, st)
+count(corr_base %>% filter(st==06), puma) %>% arrange(-n)
+max(corr_base$puma) # 70301
+
+corr_workers <- corr_base %>%
+  filter(eval(parse(text=sworker))) %>%
+  filter(cow == 4) %>%  # state government
+  mutate(f_create_vars(.)) %>%  # returns the data frame with additional variables, including rwagp
+  # adjust rwagp again, using the gdp price index, to bring it from 2019 to 2020
+  # igddppi is the multiplier that converts a year to 2020
+  mutate(rwagp=rwagp * gdppi$igdppi[gdppi$year==2019]) %>% 
+  left_join(stcodes %>% 
+              select(st=stfips, stabbr) %>% 
+              mutate(st=as.integer(st)),
+            by="st") %>%
+  left_join(sarpp %>%
+              select(stabbr, year, rpp),  # merge on the prior year
+            by=c("stabbr", "year")) %>%
+  mutate(rppwagp=rwagp / rpp,  # rwagp is real wage (adjusted for year), rppwagp is region adjusted
+         lrppwagp=log(rppwagp)) %>%  
+  group_by(stabbr) %>%
+  mutate(n=n()) %>%
+  ungroup
+
+summary(corr_workers)
+count(corr_workers, stabbr)
+corr_workers %>%
+  group_by(stabbr) %>%
+  summarise(n=n(), wtdn=sum(pwgtp), rwagp=wtd.mean(rwagp, pwgtp))
+
+saveRDS(corr_workers, here::here("data", "corr_workers.rds"))
+
+```
+
+#### Create subset representing all sampled workers in California
+
+This subset has approximately 640,000 observations.
+
+We construct real wages for each California worker by using the BEA MSA-level regional price parity index for the worker's California MSA, or for non-metro areas as a whole if the worker is not in an MSA, for the relevant year of the person sampled (one of 2015-2019).
+
+```{r acs_caworkers, eval=FALSE}
+sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE st=06") # 10 secs
+
+system.time(cadf <- collect(tbl(db, sql(sqlcmd))))  # 4 secs
+glimpse(cadf)
+summary(cadf)
+count(cadf, st) # 1.9m
+count(cadf, puma) %>% arrange(-n)
+
+# cadf %>% 
+#   mutate(year=str_sub(serialno, 1, 4)) %>% 
+#   group_by(year) %>%
+#   summarise(minadjinc=min(adjinc), maxadjinc=max(adjinc))
+#   year  minadjinc maxadjinc
+#   <chr>     <int>     <int>
+# 1 2015    1080470   1080470
+# 2 2016    1073449   1073449
+# 3 2017    1054606   1054606
+# 4 2018    1031452   1031452
+# 5 2019    1010145   1010145
+
+caworkers <- cadf %>%
+  filter(eval(parse(text=sworker))) %>%
+  filter(cow %in% 1:5) %>%
+  mutate(f_create_vars(.),
+         cowf=f_cow(cow)) %>%
+  # adjust rwagp again, using the gdp price index, to bring it from 2019 to 2020
+  # igddppi is the multiplier that converts a year to 2020
+  mutate(rwagp=rwagp * gdppi$igdppi[gdppi$year==2019]) %>% 
+  # get state abbreviation
+  left_join(stcodes %>% 
+              select(st=stfips, stabbr) %>% 
+              mutate(st=as.integer(st)),
+            by="st") %>%
+  left_join(acsocodes, by="occp") %>%
+  # get msa (fips) code and msaname that the puma is (mostly) within
+  left_join(pumas_caxwalk %>% 
+              select(puma, pumaname, msacode, msaname),
+            by = "puma") %>%
+  # get regional price parity index
+  left_join(carpp %>% 
+              filter(type=="metro") %>%
+              select(msacode=fips, year, rpp),
+            by=c("msacode", "year")) %>%
+  mutate(msacode=ifelse(is.na(msacode), -9999, msacode),
+         msaname=ifelse(is.na(msaname), "nonmetro", msaname),
+         type=ifelse(msacode==-9999, "nonmetro", "metro")) %>%
+  # merge again to get regional price parity for the nonmetro areas
+  left_join(carpp %>% 
+              filter(type=="nonmetro") %>%
+              select(type, year, rpp_nonmetro=rpp),
+            by=c("type", "year")) %>%
+  mutate(rpp=ifelse(type=="nonmetro", rpp_nonmetro, rpp),
+         rppwagp=rwagp / rpp,  # rwagp is real wage (adjusted for year), rppwagp is region adjusted
+         lrppwagp=log(rppwagp)) %>%
+  select(-rpp_nonmetro)
+summary(caworkers)
+
+count(caworkers, occp, occname) %>% arrange(-n)
+count(caworkers, occp, soc, occname) %>% filter(str_sub(soc, 1, 3)=="33-")
+
+saveRDS(caworkers, here::here("data", "caworkers.rds"))
+
+```
+
+
+#### Create ACS summary of educational attainment of california workers by occupation and sector
+
+```{r job_educ, eval=FALSE}
+cajobeduc <- caworkers %>%
+  group_by(soc, occp, occname, cow, cowf, edattain) %>%
+  summarise(n=n(),
+            wtdn=sum(pwgtp),
+            yoschool=median(yoschool, na.rm=TRUE),
+            ltassoc=sum(ltassoc * pwgtp),
+            rwagp=sum(rwagp * pwgtp),
+            rppwagp=sum(rppwagp * pwgtp),
+            .groups="drop") %>%
+  group_by(soc, occp, occname, cow, cowf) %>%
+  summarise(n=sum(n),
+            ltassoc=sum(ltassoc),
+            assoc=sum(wtdn[edattain %in% c("associate")]),
+            ba=sum(wtdn[edattain %in% c("BA")]),
+            maplus=sum(wtdn[edattain %in% c("MA+")]),
+            rwagp=sum(rwagp),
+            rppwagp=sum(rppwagp),
+            # MUST put wtdn last so it is not revised before being used
+            wtdn=sum(wtdn),
+            .groups="drop") %>%
+  mutate(across(c(ltassoc, assoc, ba, maplus, rwagp, rppwagp), ~ .x / wtdn)) %>%
+  select(soc, occname, occp, cow, cowf, n, wtdn, everything())
+summary(cajobeduc)
+
+saveRDS(cajobeduc, here::here("data", "cajobeduc.rds"))
+
+```
+
+## Workplace injury rates
+
+```{r eval=FALSE}
+# url_base <- "https://download.bls.gov/pub/time.series/hc/"
+# files <- c("hc.age", "hc.case", "hc.category", "hc.category2", "hc.contacts", "hc.data.0.Current", "hc.data.1.AllData", "hc.datatype", "hc.event", "hc.footnote", "hc.gender", "hc.industry", "hc.los", "hc.nature", "hc.occupation", "hc.pob", "hc.race", "hc.series", "hc.source", "hc.txt")
+# keep <- setdiff(files, "hc.data.0.Current")
+
+url_base <- "https://download.bls.gov/pub/time.series/cs/"
+files <- c("cs.age", "cs.case", "cs.category", "cs.contacts", "cs.data.0.Current", "cs.data.1.AllData", "cs.datatype", "cs.event", "cs.footnote", "cs.gender", "cs.hour", "cs.industry", "cs.los", "cs.nature", "cs.occupation", "cs.ownership", "cs.pob", "cs.race", "cs.series", "cs.source", "cs.special", "cs.state", "cs.time", "cs.txt", "cs.weekday")
+keep <- setdiff(files, "cs.data.0.Current")
+
+for(file in keep){
+  url <- paste0(url_base, file)
+  path <- paste0(wpid, "cs/",  file)
+  download.file(url, path, mode="wb")
+}
+
+# get and save the workplace injuries data
+# Field #/Data Element		Length		Value(Example)
+# 1.  series_id			  17		HCUSH332233
+# 2.  year			   4		1998
+# 3.  period			   3		M01
+# 4.  value			  12		2360
+# 5.  footnote_codes		  10		It varies
+# 
+# The series_id (HCUSH332233) can be broken out into:
+# Code				=			Value
+# survey abbreviation		=			HC
+# seasonal adjustment code	=			U
+# case category			=			SH
+# detail code			=			3322
+# datatype code			=			3
+# case type code			=			3
+
+
+# datatype_code	datatype_text
+# 3	Injury and illness rate per 10,000 full-time workers
+# 6	Injury and illness Cases
+# 7	Median days lost
+
+
+# case_code	case_text
+# 3	Selected characteristic by detailed industry
+# A	Industry division or selected characteristic by age
+# E	Industry division or selected characteristic by detailed event or exposure
+# G	Industry division or selected characteristic by gender
+# H	Industry division or selected characteristic by hours at work
+# L	Industry division or selected characteristic by length of service
+# M	Industry division or selected characteristic by special combinations
+# N	Industry division or selected characteristic by detailed nature of condition
+# O	Industry division or selected characteristic by detailed occupation
+# P	Industry division or selected characteristic by detailed part of body affected
+# R	Industry division or selected characteristic by race or ethnicity
+# S	Industry division or selected characteristic by detailed source of injury/illness
+# T	Industry division or selected characteristic by time of day
+# W	Industry division or selected characteristic by day of week
+
+# ownership_code	ownership_name
+# 0	All ownerships
+# 1	Private industry
+# 7	State government
+# 8	Local government
+# 9	State and local government combined
+
+wpiown <- read_tsv(paste0(wpid, "cs/", "cs.ownership"))
+wpioccs <- read_tsv(paste0(wpid, "cs/", "cs.occupation"), col_types = "ccccc")
+wpistates <- read_tsv(paste0(wpid, "cs/", "cs.state"), col_types = "ccccc")
+
+
+# df <- read_table(paste0(wpid, "cs/", "cs.data.1.AllData"), col_types = "cicnc")  # TOO SLOW!
+
+a <- proc.time()
+df1 <- vroom(paste0(wpid, "cs/", "cs.data.1.AllData"), col_types = "cicnc")
+b <- proc.time()
+b - a # 31 secs
+saveRDS(df1, paste0(wpid, "wpi_all.rds"))
+
+df1 <- readRDS(paste0(wpid, "wpi_all.rds"))
+
+# count(df1, year) # 2011-2019
+
+df2 <- df1 %>%
+  filter(str_sub(series_id, 1, 6)=="CSU00X",  # occupational detail
+         str_sub(series_id, 13, 14)=="3O")  # datatype and case code -- 3"O" not zero
+rm(df1)
+gc(verbose=TRUE)
+
+
+# https://github.com/tidyverse/readr/issues/1145
+#..you can install the development versions of cpp11 and then re-install readr.
+# devtools::install_github("r-lib/cpp11")
+# I have NOT installed dev versions of vroom and reader but here is cood to do so
+# devtools::install_dev("vroom")
+#  or devtools::install_github("r-lib/vroom/vroom")
+# devtools::install_github("tidyverse/readr")
+
+
+# how to parse series_id
+# survey abbreviation		=			cs
+# seasonal adjustment code	=			U
+# category code			=			00X
+# detail code			=			00XXXX
+# datatype code			=			3
+# case code			=			E
+# ownership code			=			1
+# state code			=			00
+df3 <- df2 %>%
+  mutate(detail=str_sub(series_id, 7, 12),
+         own=str_sub(series_id, 15, 15) %>% as.integer,
+         stfips=str_sub(series_id, 16, 17)) %>%
+  select(series_id, detail, own, stfips, year, value, footnote_codes)
+count(df3, detail)  # 1,253
+count(df3, own)  # 0, 1, 7, 8, 9
+count(df3, stfips)  # 47 including US
+count(df3, year) # 2011-2019
+count(df3, footnote_codes) %>% NA for all
+
+# create factors
+df4 <- df3 %>%
+  rename(ocode=detail) %>%
+  left_join(wpiown %>% 
+              select(own=ownership_code, ownf=ownership_name),
+            by="own") %>%
+  left_join(wpioccs %>% 
+              select(ocode=occupation_code, oname=occupation_text, displevel=display_level),
+            by = "ocode") %>%
+  left_join(wpistates %>% select(stfips=state_code, stname=state_name), by="stfips") %>%
+  left_join(stcodes %>% select(stname, stabbr), by="stname") %>%
+  mutate(stfips=as.integer(stfips), 
+         stabbr=case_when(stfips==00 ~ "US",
+                          stfips==66 ~ "GU",
+                          TRUE ~ stabbr))
+summary(df4)
+count(df4, own, ownf)  # no federal government
+count(df4, stfips, stname)  # 47 including all US, DC, GU, PR, VI (42 states)
+count(df4, stfips, stabbr, stname)
+count(df4, displevel)
+
+tmp <- df4 %>%
+  filter(stabbr=="CA", year>=2019)
+  
+
+glimpse(df4)
+wpirates <- df4 %>%
+  select(stabbr, year, own, ownf, ocode, oname, displevel, value)
+summary(wpirates)
+
+saveRDS(wpirates, here::here("data", "wpirates.rds"))
+
+
+```
+
+
+# GET DATA AND BEGIN
 ```{r load_data}
 # load previously prepared data
+gdppi <- readRDS(here::here("data", "gdppi.rds"))
+cpi <- readRDS(here::here("data", "cpi.rds"))
 
 load(file=here::here("data", "rpp.rdata"), verbose=TRUE) # max year is 2019 for all
 # sarpp, marpp, and carpp with state, metro/nonmetro, and CA metro, nonmetro regional price parities
@@ -207,14 +1010,11 @@ corr_workers <- readRDS(here::here("data", "corr_workers.rds"))
 caworkers <- readRDS(here::here("data", "caworkers.rds"))
 cajobeduc <- readRDS(here::here("data", "cajobeduc.rds"))
 
-
 ```
 
 # Wages of correctional officers
 
 ## Cross-state comparisons of correctional officers' wages
-
-### Descriptive analysis
 
 We'd expect wages to be higher when education or experience is greater. Looking at these two workforce characteristics in isolation can give us a sense of whether they will make a lot of difference when we run models that control for education and experience.
 
@@ -249,9 +1049,13 @@ corr_oesus50 <- corr_oessts %>%
 corr_oes <- bind_rows(corr_oessts, corr_oesus50) %>%
   left_join(sarpp %>% select(stabbr, year=yearplus1, rpp),
             by=c("stabbr", "year")) %>%
-  mutate(rwage = wage / rpp)
+  left_join(gdppi %>% select(year, igdppi), by="year") %>%
+  mutate(rwage=wage * igdppi,
+         rppwage = wage / rpp,
+         stname=getstname(stabbr))
 summary(corr_oes)
-# corr_oes %>% filter(is.na(rwage))  # RI in 2017
+count(corr_oes, stabbr, stname)
+# corr_oes %>% filter(is.na(rppwage))  # RI in 2017
 
 
 #.. ACS states data preparation ----
@@ -314,28 +1118,7 @@ corr_summary <- corr_wages %>%
 
 ```
 
-
-#### Miscellaneous
-
-```{r include=FALSE}
-# Number of correction officers per capita and average wage, not interesting
-pdata <- corr_oes %>%
-  filter(year==2020) %>%
-  left_join(spop.a %>%
-              filter(year==2020) %>%
-              select(stabbr, pop=value),
-            by=c("stabbr")) %>%
-  mutate(epop100k=emp / (pop / 100e3))
-
-pdata %>%
-  ggplot(aes(epop100k, wage, label=stabbr)) +
-  geom_point() +
-  geom_text()
-
-```
-
-
-#### Wages
+## Intro
 
 Here we look at raw wages, without controlling for differences across workers such as educational attainment, as this is the starting point and is what other people will look at.
 
@@ -349,10 +1132,10 @@ We don't expect summaries of the ACS to be as high-quality a measure of overall 
 
 We show average wages at 2020 levels from these two sources in the two figures below.
 
+## Wages based on the OES
 
-##### Key data: Wages based on the OES
-
-```{r include=TRUE, fig.width=6, fig.height=8}
+### Nominal wages
+```{r oes_nominal, include=TRUE, fig.width=10, fig.height=8}
 
 pdata <- corr_oes %>%
   filter(year==2020, stabbr != "US") %>%
@@ -374,12 +1157,6 @@ p <- pdata %>%
   geom_col(aes(fill=caldum), size=1.5, width=0.1) +
   scale_colour_manual(values=c("blue", "red")) +
   scale_fill_manual(values=c("blue", "red")) +
-  # geom_text(aes(x=xmoved, label=comma(x=wage, accuracy=1, prefix="$")),
-  #           hjust=0, size=2.25,
-  #           data=. %>% mutate(xmoved=ifelse(wage > median(pdata$wage), wage + 1000, wage - 5000))) +
-  # geom_text(aes(label=comma(x=wage, accuracy=1, prefix="$")),
-  #           position=position_nudge(x=ifelse(.data$wage > median(.data$wage), 1000, -1000)), 
-  #           hjust=0, size=2.25) +
   geom_text(aes(label=comma(x=wage, accuracy=1, prefix="$")),
             hjust=0, nudge_x=500, size=2.25,
             data=. %>% mutate(wage=ifelse(rank <= 5, wage, NA_real_))) + #,
@@ -390,7 +1167,7 @@ p <- pdata %>%
   ggtitle(label=gtitle, subtitle = gsubtitle) +
   theme(axis.text.y = element_text(hjust = 0)) +
   geom_vline(xintercept = median(pdata$wage), linetype="solid", colour="darkgrey", size=.5) +
-  scale_x_continuous(breaks=seq(0, 100e3, 10e3), labels=label_comma(accuracy=1, prefix="$"), limits=c(0, 100e3)) +
+  scale_x_continuous(breaks=seq(0, 100e3, 10e3), labels=label_comma(accuracy=1, prefix="$"), limits=c(0, 95e3)) +
   legend_none +
   caption_left
 p
@@ -398,57 +1175,218 @@ p
 ggsave(here::here("results", "wages_oes.png"), plot=p, width=10, height=8, scale=1)
 write_csv(pdata, here::here("results", "wages_oes_data.csv"))
 
+
+  # geom_text(aes(x=xmoved, label=comma(x=wage, accuracy=1, prefix="$")),
+  #           hjust=0, size=2.25,
+  #           data=. %>% mutate(xmoved=ifelse(wage > median(pdata$wage), wage + 1000, wage - 5000))) +
+  # geom_text(aes(label=comma(x=wage, accuracy=1, prefix="$")),
+  #           position=position_nudge(x=ifelse(.data$wage > median(.data$wage), 1000, -1000)), 
+  #           hjust=0, size=2.25) +
+
 ```
+
+### Real wages over time
+```{r wage_tab}
+# https://cran.r-project.org/web/packages/viridis/vignettes/intro-to-viridis.html
+# https://www.r-graph-gallery.com/ggplot2-color.html
+storder <- c("CA", "US", "MA", "RI", "AZ", "NV", "OR") # use stabbr for convenience
+tabdata <- corr_oes %>%
+  filter(stabbr %in% storder, year %in% c(2012, 2016, 2020)) %>%
+  mutate(stabbr=factor(stabbr, levels=storder)) %>%
+  arrange(stabbr, year) %>%
+  mutate(stname=factor(.$stname, levels=unique(.$stname))) %>%
+  select(stabbr, stname, year, wage) %>%
+  group_by(year) %>%
+  mutate(pdiff=ifelse(stabbr != "CA", wage[stabbr=="CA"] / wage - 1, NA_real_)) %>%
+  ungroup %>%
+  pivot_wider(names_from = year, values_from = c(wage, pdiff))
+  # %>% select(stabbr, stname, contains("2012"), contains("2016"), contains("2020"))
+tabdata
+
+tab <- bind_rows(tibble(stname="California and the U.S.:"), tabdata) %>%
+  add_row(stname="Neighbors:", .after=5) %>%
+  add_row(stname="States with next-highest wages in 2020:", .after=3) %>%
+  gt() %>%
+  cols_hide(stabbr) %>%
+  tab_header(
+    title = "Correctional officer wages, selected years"
+      ) %>%
+  cols_label(stname="",
+             wage_2012="2012",
+             wage_2016="2016",
+             wage_2020="2020",
+             pdiff_2012="2012",
+             pdiff_2016="2016",
+             pdiff_2020="2020") %>%
+  cols_align(align="left", columns = stname) %>%
+  tab_spanner(
+    label = html("Average wage"),
+    columns = contains("wage")
+    ) %>%
+  tab_spanner(
+    label = "California wage % above other area",
+    columns = contains("pdiff")
+    )  %>%
+  fmt_number(
+    columns=c(contains("wage")),
+    pattern = "${x}",
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = contains("pdiff"),
+    decimals = 1) %>%
+  fmt_missing(columns=everything(), missing_text="") %>%
+  fmt_missing(contains("pdiff"), rows=2) %>%
+  tab_source_note(paste0("Sources: ", source_oesres, ".")) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold")
+      ),
+    locations = cells_body(
+      rows = c(1, 4, 7)
+    )
+  ) %>%
+  cols_width(
+    stname ~ px(200),
+    everything() ~ px(100)
+    )
+
+tab
+gtsave(tab, filename="tab_wage_states.png", path=here::here("results"))
+
+# library(viridis)
+# 
+# sts <- c("CA", "AZ", "NV", "OR", "MA", "US")
+# storder <- c("US", "CA", "MA", "NY", "OR", "NV", "AZ")
+# storder <- c("CA", "MA", "NY", "OR", "NV", "AZ") # use stabbr for convenience
+# pdata <- corr_oes %>%
+#   filter(stabbr %in% storder, year %in% c(2012, 2016, 2020)) %>%
+#   mutate(stabbr=factor(stabbr, levels=storder)) %>%
+#   arrange(stabbr, year) %>%
+#   mutate(stname=factor(pdata$stname, levels=unique(pdata$stname))) # forces same ordering as stabbr
+# 
+# 
+# p <- pdata %>%
+#   ggplot(aes(factor(year), rwage, fill=stname)) +
+#   geom_col(position = position_dodge()) +
+#   scale_fill_viridis(discrete=TRUE) +
+#   theme_bw()
+# p
+# p + scale_fill_brewer(palette = "Set1")
+
+```
+
+
+### Cost-of-living-adjusted wages
 
 Now we look at the same data (OES), adjusted for price differences across states. Not surprisingly California wages are not as far above other states after adjusting for price differences, because California is expensive, but the differences are still large.
 
 
-```{r include=TRUE, fig.width=6, fig.height=8}
+```{r oes_col, include=TRUE, fig.width=6, fig.height=8}
+top10data <- corr_oes %>%
+  filter(year==2020) %>%
+  mutate(rpprank=ifelse(stabbr != "US",
+                        rank(desc(rppwage)),
+                        NA_real_),
+         pdrppwage=rppwage[stabbr=="CA"] / rppwage - 1,
+         pdrppwage=ifelse(stabbr=="CA", NA_real_, pdrppwage),  # for better display in table
+         stname=ifelse(stabbr=="US", "United States average", stname)) %>%
+  select(stabbr, stname,
+         rppwage, rpprank, pdrppwage) %>%
+  arrange(desc(rppwage)) %>%
+  filter(rpprank <= 10 | stabbr=="US")
 
-gtitle <- "State correctional officer salaries in 2020"
-gsubtitle <- "Adjusted for differences in state cost of living"
+src_note <- paste0("Sources: ", source_oesres, ", and ", source_rpp, ".")
 
-capt1 <- "Note: vertical line marks median"
-capt2 <-paste0("\nSources: ", source_oesres, "; and ", source_rpp, ".")
-capt <- paste0("\n", capt1, "\n", str_wrap(capt2, 100))
+tab <- top10data %>%
+  select(stname, rppwage, rpprank, pdrppwage) %>%
+  gt() %>%
+  tab_header(
+    title = html("Correctional officer wages<br>adjusted for state cost of living differences"),
+    subtitle= "Top 10 states by cost-of-living adjusted wage, plus U.S. average"
+      ) %>%
+  cols_label(stname="",
+             rppwage="Adjusted wage",
+             rpprank="Rank",
+             pdrppwage=html("California<br>% above<br>other state")) %>%
+  cols_align(align="left", columns = stname) %>%
+  fmt_number(
+    columns=c(rppwage),
+    pattern = "${x}",
+    decimals=0
+  ) %>%
+  fmt_number(
+    columns=c(contains("Rank")),
+    pattern = "{x}",
+    decimals=0
+  ) %>%
+  fmt_percent(
+    columns = contains("pd"),
+    decimals = 1) %>%
+  fmt_missing(columns=c(rpprank, pdrppwage)) %>%
+  tab_source_note(src_note) %>%
+  cols_width(
+    stname ~ px(200),
+    everything() ~ px(100)
+    )
 
-pdata <- corr_oes %>%
-  filter(year==2020, stabbr != "US") %>%
-  mutate(stname=get_stname(stabbr),
-         rwage=wage / rpp)
+tab
+gtsave(tab, filename="tab_rppwage_states.png", path=here::here("results"), expand = 10)
 
-p <- pdata %>%
-  ggplot(aes(y=reorder(stname, rwage), x=rwage)) +
-  geom_point(aes(colour=caldum), size=1.5) +
-  scale_colour_manual(values=c("blue", "red")) +
-  theme_bw() +
-  labs(x="Annual wage, adjusted for cross-state price differences", y=NULL,
-       caption=capt) +
-  ggtitle(label=gtitle, subtitle = gsubtitle) +
-  theme(axis.text.y = element_text(hjust = 0)) +
-  geom_vline(xintercept = median(pdata$rwage)) +
-  scale_x_continuous(breaks=seq(0, 100e3, 10e3), labels=label_comma(accuracy=1, prefix="$")) +
-  legend_none +
-  caption_left
-
-p
-
-ggsave(here::here("results", "real_wages_oes.png"), 
-       plot=p, width=10, height=8, scale=1.25)
-# keyfacts$real_wages_oes <- pdata
-
+# tab <- tabdata %>%
+#   gt() %>%
+#   cols_hide(stabbr) %>%
+#   tab_header(
+#     title = "Correctional officer wages adjusted for state cost of living differences",
+#     subtitle= "Top 10 states by cost-of-living adjusted wage"
+#       ) %>%
+#   cols_label(stname="",
+#              wage="Wage",
+#              nrank="Rank",
+#              pdwage="California % above",
+#              rppwage="Wage",
+#              rpprank="Rank",
+#              pdrppwage="California % above") %>%
+#   cols_align(align="left", columns = stname) %>%
+#   tab_spanner(
+#     label = html("Nominal wages"),
+#     columns = c(wage, nrank, pdwage)
+#     ) %>%
+#   tab_spanner(
+#     label = "Adjusted wages",
+#     columns = c(rppwage, rpprank, pdrppwage)
+#     )  %>%
+#   fmt_number(
+#     columns=c(wage, rppwage),
+#     pattern = "${x}",
+#     decimals=0
+#   ) %>%
+#   fmt_number(
+#     columns=c(contains("Rank")),
+#     pattern = "{x}",
+#     decimals=0
+#   ) %>%
+#   fmt_percent(
+#     columns = contains("pd"),
+#     decimals = 1) %>%
+#   fmt_missing(columns=everything(), missing_text="") %>%
+#   tab_source_note(paste0("Sources: ", source_oesres, ".")) %>%
+#   cols_width(
+#     stname ~ px(200),
+#     everything() ~ px(100)
+#     )
 
 ```
 
 
-##### Wages based on the ACS
+## Wages based on the ACS
 
 The similarity between the ACS plot here and the OES plot above give us confidence when using the ACS to control for differences across individuals.
 
 ```{r include=TRUE, fig.width=6, fig.height=8}
 
 gtitle <- "State correctional officer salaries"
-gsubtitle <- "Based on a 5-year sample adjusted to 2019 income levels"
+gsubtitle <- "Based on a 5-year sample adjusted to 2020 income levels"
 
 capt1 <- "Note: vertical line marks median"
 capt2 <-paste0("\nSource: ", source_acs, ".")
@@ -475,54 +1413,13 @@ p <- pdata %>%
 
 p
 
-ggsave(here::here("results", "wages_acs.png"), 
-       plot=p, width=10, height=8, scale=1.25)
-
-
+ggsave(here::here("results", "wages_acs.png"), plot=p, width=10, height=8, scale=1.25)
 ```
 
-##### Wages in California relative to other states, over time, based on the OES
 
-```{r include=TRUE, fig.width=6, fig.height=8}
-# count(corr_oes, stabbr)
-pdata <- corr_oes %>%
-  filter(stabbr %in% c("US", "CA", compstates)) %>%
-  group_by(year) %>%
-  mutate(pdwage=wage / wage[stabbr=="US"] * 1 - 1,
-         stname=get_stname(stabbr)) %>%
-  ungroup %>%
-  filter(stabbr != "US")
+## Characteristics of correctional workers in California versus the United States
 
-# keyfacts$wages_oes_time <- pdata
-
-cols <- c('#a6cee3','#1f78b4','black','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6')
-cols <- c('#a6cee3','red', 'black','#33a02c','#fb9a99','#1f78b4','#fdbf6f','#ff7f00','#cab2d6')
-
-capt1 <- paste0("\nSource: ", source_oesres, ".")
-capt2 <- "Note: Not adjusted for price differences across states."
-capt <- paste0(capt1, "\n", capt2)
-
-p <- pdata %>%
-  ggplot(aes(year, pdwage, colour=stabbr)) +
-  geom_line(size=1.0) +
-  geom_point() +
-  geom_hline(yintercept = 0) +
-  scale_colour_manual(values=cols) +
-  # scale_size_manual(values=c(1, rep(.5, 8))) +
-  labs(y="% above or below U.S. average", x=NULL,
-       caption=capt) +
-  scale_y_continuous(breaks=seq(-1, 1, .05), labels = label_percent(accuracy=1)) +
-  ggtitle("State correctional officers' salaries relative to U.S. average",
-          subtitle="California, neighbors, and selected other states") +
-  theme_bw() +
-  legend_notitle +
-  caption_left
-p
-
-
-```
-
-#### Education
+### Education
 
 Wages might be expected to be higher in states where correctional officers have greater education.
 
@@ -553,10 +1450,9 @@ p <- corr_summary %>%
   caption_left
 p
 
-
 ```
 
-#### Experience
+### Experience
 
 Wages might be expected to be higher in states where correctional officers have greater experience.
 
@@ -594,7 +1490,99 @@ p
 <br>
     
     
-### Econometric model of correctional officers' wages vs. other states
+
+## Table summarizing California Correctional workers versus other states
+```{r tab_acs_summary, include=TRUE}
+
+# top10data  # top 10 from OES
+
+uswtdmeans <- corr_summary %>%
+  summarise(across(c(rppwagp, rwagp, exp, ltassoc, male), ~ wtd.mean(.x, weights=wtdn))) %>%
+  mutate(stabbr2="US", stname="United States average")
+
+tabdata <- top10data %>%
+  select(stabbr2=stabbr) %>%
+  inner_join(corr_summary, by="stabbr2") %>% # I do it this way to keep states in the top 10 order
+  mutate(stname=ifelse(stabbr2=="other", "All other", stname)) %>%
+  bind_rows(uswtdmeans %>% select(-stabbr2)) %>%
+  mutate(assocplus = 1 - ltassoc) %>%
+  select(stname, exp, assocplus)
+
+
+tab <- tabdata %>%
+  gt() %>%
+  tab_header(
+    title = html("Experience and education of state correctional officers"),
+    subtitle= "Top states by cost-of-living adjusted wage, plus U.S. average"
+      ) %>%
+  cols_label(stname="",
+             exp=html("Estimated<br>years of<br>experience"),
+             assocplus=html("% with<br>Associate's<br>degree or higher")) %>%
+  cols_align(align="left", columns = stname) %>%
+  fmt_number(
+    columns=exp,
+    pattern = "{x}",
+    decimals=1
+  ) %>%
+  fmt_percent(
+    columns = assocplus,
+    decimals = 1) %>%
+  tab_source_note(paste0("Source: ", source_acs)) %>%
+  cols_width(
+    stname ~ px(200),
+    everything() ~ px(200)
+    ) %>%
+  tab_footnote(
+    footnote = "Alaska and Rhode Island excluded because each has fewer than 50 observations.",
+    locations = cells_title(groups="subtitle")
+  )
+
+tab
+gtsave(tab, filename="tab_educ_exp.png", path=here::here("results"), expand = 10)
+
+  
+# 
+#   
+# corr_summary %>%
+#   ggplot(aes(exp, ltassoc, colour=dumca)) +
+#   geom_point() +
+#   geom_hline(yintercept = median(corr_summary$ltassoc)) +
+#   geom_vline(xintercept = median(corr_summary$exp))
+
+# capt1 <- "Note: horizontal and vertical lines mark median"
+# capt2 <- paste0("Source: ", source_acs, ".")
+# capt <- paste0("\n", capt1, "\n", str_wrap(capt2, 100))
+# 
+# p <- corr_summary %>%
+#   ggplot(aes(1 - ltassoc, exp, label=stabbr2, colour=dumca)) +
+#   geom_point(size=0.275, colour="black") +
+#   # geom_text(size=2.5, position = position_jitter()) +
+#   # geom_text(size=2.5, nudge_x=-0.0075) +
+#   geom_text(size=2.5, nudge_x=0.0015, hjust=0) +
+#   geom_hline(yintercept = median(corr_summary$exp), size=0.1, colour="black") +
+#   geom_vline(xintercept = median(1 - corr_summary$ltassoc), size=0.1, colour="black") +
+#   scale_colour_manual(values=c("blue", "red")) +
+#   scale_x_continuous(name="% of correctional officers with associate's degree or higher",
+#                      labels = label_comma(scale=100, accuracy=1, suffix="%"),
+#                      breaks=seq(.0, 1, .05)) +
+#   scale_y_continuous(name="Estimated years of experience",
+#                      breaks=10:30,
+#                      labels = label_comma(accuracy=.1)) +
+#   theme_bw() +
+#   legend_none +
+#   ggtitle("Education and experience of correctional officers by state") +
+#   labs(caption=capt) +
+#   caption_left
+# p
+# 
+# ggsave(here::here("results", "state_educ_exp.png"), plot=p, width=10, height=8, scale=1.0)
+# theme(axis.text.y = element_text(hjust = 0)) +
+
+```
+
+    
+    
+## Econometric model of correctional officers' wages vs. other states
 
 In this model, we regress real wages (adjusted for price differences across states) of state correctional officers in the 50 states, in log form, on:
 
@@ -617,7 +1605,10 @@ femod <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.f
                data=corr_workers_cut, notes=FALSE)
 # suppress note about dropping edattainother
 # keyfacts$statemod <- femod
-
+summary(femod)
+tidy(femod)
+tidy(femod) %>%
+  filter(abs(p.value) < .05)
 
 ```
 
@@ -671,18 +1662,23 @@ p
 
 ```
 
-#### Key result: differences across states (state fixed effects){#keystatefe}
+#### Key result: differences across states (state fixed effects)
 
 ```{r acs_corr_model_results, include=TRUE, fig.width=6, fig.height=8}
 # , fig.height=8, fig.width=10
 fe <- fixef(femod)
 # summary(fe)
 
+# centered fixed effects
 cfe <- tibble(stabbr=names(fe$stabbr2), fe=fe$stabbr2) %>%
   mutate(cfe=fe - mean(fe),
          stname=get_stname(stabbr),
          stname=ifelse(stabbr=="other", "Small states as a group", stname),
-         rank=rank(desc(cfe)))
+         rank=rank(desc(cfe)),
+         cfepct=exp(cfe) -1) %>%
+  arrange(desc(cfepct)) %>%
+  mutate(label=ifelse(row_number() <= 5, percent(cfepct, accuracy=.1), ""))
+cfe
 # keyfacts$statecfe <- cfe
 
 gtitle <- "State correctional officer salaries relative to those in the average state"
@@ -695,8 +1691,12 @@ capt <- paste0(str_wrap(capt1, 100), "\n", capt2)
 statefe_dots <- cfe %>%
   # filter(stabbr != "Other") %>%
   mutate(grp=ifelse(stabbr=="CA", "CA", "other")) %>%
-  ggplot(aes(y=reorder(stname, cfe), x=cfe * 100)) +
-  geom_point(aes(colour=grp), size=1.5) +
+  ggplot(aes(y=reorder(stname, cfepct), x=cfepct)) +
+  geom_col(aes(fill=grp), size=1.5, width=0.1) +
+  geom_point(aes(colour=grp), size=0.75) +
+  geom_text(aes(label=label),
+            hjust=0, nudge_x=.003, size=2.25) +
+  scale_fill_manual(values=c("red", "blue")) +
   scale_colour_manual(values=c("red", "blue")) +
   theme_bw() +
   labs(x="% above or below average state", y=NULL,
@@ -704,14 +1704,13 @@ statefe_dots <- cfe %>%
   ggtitle(label=gtitle, subtitle = gsubtitle) +
   theme(axis.text.y = element_text(hjust = 0)) +
   geom_vline(xintercept = 0) +
-  scale_x_continuous(breaks=seq(-100, 100, 5)) +
+  scale_x_continuous(breaks=seq(-1, 1, .05), labels=label_percent(accuracy=1)) +
   legend_none +
   caption_left
 
 statefe_dots
 
-ggsave(here::here("results", "statefe_dots.png"), 
-       plot=statefe_dots, width=10, height=8, scale=1.25)
+ggsave(here::here("results", "statefe_bar.png"), plot=statefe_dots, width=10, height=8, scale=1.0)
   
 ```
 
@@ -729,6 +1728,81 @@ I take 3 approaches to within-California comparisons:
 1.   Compare state government correctional officers to federal and local government correctional officers
 2.   Compare state government correctional officers to private sector workers in law, public safety, corrections & security occupations
 3.   Compare state government correctional officers to private sector workers in occupations where workers have simlar education attainment
+
+
+```{r wpius_table}
+df <- wpirates %>%
+  filter(stabbr=="US", year==2019)
+df %>% filter(ocode=="333012")
+
+df2 <- df %>%
+  filter(own==0 | (ocode=="333012" & own %in% c(1, 7, 8))) %>% # private, s, l, for corr officers, private other
+  filter(displevel==4)
+
+df2 <- df %>%
+  filter(own %in% c(1, 7, 8)) %>% # private, s, l, for corr officers, private other
+  filter(displevel==4) %>%
+  mutate(ownf2=factor(own, levels=c(1, 7, 8), labels=c("private", "state gov't", "local gov't")),
+         label=paste0(oname, " (", ownf2, ")"),
+         # Delete non-alphanumeric and selected punctuation
+         label=str_replace_all(label, "[^[:alnum:] (),]", ""),
+         label=str_replace(label, "sheriffs", "sheriff's"),
+         rank=rank(desc(value))) %>%
+  arrange(rank)
+
+noccs <- nrow(df2)
+
+tabdata <- df2 %>%
+  mutate(label=ifelse(ocode=="333012",
+                      paste0(oname, " (", ownf, ")"),
+                      oname),
+         # label=str_replace_all(label, "[^[:alnum:]]", ""),    # Delete non-alphanumeric
+         label=str_replace_all(label, "[^[:alnum:] (),]", ""),    # Delete non-alphanumeric
+         # label=iconv(label, from = '', to = 'ASCII//TRANSLIT'), # convert to ascii
+         rank=rank(desc(value))) %>%
+  filter(rank <= 10 | ocode=="333012") %>%
+  arrange(rank) %>%
+  select(ocode, label, value, rank)
+
+
+tab <- tabdata %>%
+  gt() %>%
+  cols_hide(ocode) %>%
+  tab_header(
+    title = "Nonfatal workplace injuries in the United States in 2019",
+    subtitle = paste0("Top 10 occupations, plus correctional officers by sector, out of ",
+                      noccs, 
+                      " occupation-sector combinations")
+      ) %>%
+  tab_spanner(label=html("Injuries and illnesses requiring days away from work<br>Per 10,000 equivalent full-time equivalent workers"),
+              columns=c(value, rank)) %>%
+  cols_label(label="",
+             value=html("Rate"),
+             rank="Rank"
+             ) %>%
+  cols_align(align="left", columns = label) %>%
+  fmt_number(
+    columns=value,
+    pattern = "{x}",
+    decimals=1
+  ) %>%
+  fmt_number(
+    columns=rank,
+    pattern = "{x}",
+    decimals=0
+  ) %>%
+  tab_source_note(paste0("Source: ", source_wpi, ".")) %>%
+  cols_width(
+    label ~ px(300),
+    everything() ~ px(200)
+    )
+
+tab
+gtsave(tab, filename="tab_wpius.png", path=here::here("results"))
+
+
+```
+
 
 ```{r wpi_us}
 count(wpirates, own, ownf)
@@ -750,19 +1824,83 @@ count(wpius, cow, own, ownf)
 ```
 
 
-### Within-California comparisons: Federal, state, and local government correctional officers
+### DJB Within-California comparisons: Federal, state, and local government correctional officers
 
-```{r}
-#.. ACS subset for regression ----
+```{r mod_cacorr_fslg_acs}
+wpius %>% 
+  filter(soc=="33-3012")
+  
+#.. ACS subset for CA FSL regression ----
 cacorr_fslacs <- caworkers %>%
-  filter(soc=="33-3012", cow %in% 3:5) %>%
-  left_join(wpius %>% select(soc, cow, wpirate), by = c("cow", "soc")) %>%
+  filter(soc=="33-3012", cow %in% 3:5) %>%  # local, state, federal, there are only 11 private obs
+  # no federal wpi rates, ONLY state and local
+  left_join(wpius %>% select(soc, cow, wpirate), by = c("cow", "soc")) %>%  
   mutate(cowf=factor(cow, levels=c(4, 3, 5), labels=c("state", "local", "federal"))) %>%
   arrange(cowf)
 
 summary(cacorr_fslacs)
 
 ```
+
+
+### Econometric model comparing wages of state, local, and federal correctional officers
+
+The following model regresses wages adjusted for regional cost of living differences on experience, education, and demographic characteristics. The sample includes California state government, local government, and federal government correctional officers. It has level-of-government fixed effects.
+
+
+```{r fsl_mod}
+# here is the cross-state model:
+# femod <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) | stabbr2,
+#                data=corr_workers_cut, notes=FALSE)
+
+cacorr_fslacs
+summary(cacorr_fslacs)
+count(cacorr_fslacs, cow, cowf)
+
+cacorr_fslacs %>%
+  group_by(cowf) %>%
+  summarise(n=n(), wpirate=mean(wpirate))
+
+camod_fsl <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + factor(year) | cowf,
+               data=cacorr_fslacs, notes = FALSE)
+summary(camod_fsl)
+
+camod_sl_wpi <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp +
+                        wpirate + factor(year) | cowf,
+               data=cacorr_fslacs %>% filter(!is.na(wpirate)), notes = FALSE)
+summary(camod_sl_wpi)
+
+```
+
+Get state-centric fixed effects
+```{r fsl_fe}
+fe <- fixef(camod_fsl)
+cfe <- fe$cowf - mean(fe$cowf)
+# summary(fe)
+
+# centered fixed effects
+cfe <- tibble(cowf=names(fe$cowf), fe=fe$cowf) %>%
+  mutate(cfe=fe - mean(fe),
+         cfepct=exp(cfe) -1,
+         state_vsother=(1 + cfepct[cowf=="state"]) / (1 + cfepct)) %>%
+  arrange(desc(cfepct))
+cfe
+
+few <- fixef(camod_sl_wpi)
+cfew <- few$cowf - mean(few$cowf)
+# summary(few)
+
+# centered fixed effects
+cfew <- tibble(cowf=names(few$cowf), fe=few$cowf) %>%
+  mutate(cfe=fe - mean(fe),
+         cfepct=exp(cfe) -1,
+         state_vsother=(1 + cfepct[cowf=="state"]) / (1 + cfepct)) %>%
+  arrange(desc(cfepct))
+cfew
+
+```
+
+
 
 #### Descriptive analysis
 
@@ -950,20 +2088,6 @@ tab
 <br>
     
     
-#### Econometric model comparing wages of state, local, and federal correctional officers
-
-The following model regresses wages adjusted for regional cost of living differences on experience, education, and demographic characteristics. The sample includes California state government, local government, and federal government correctional officers. It has level-of-government fixed effects.
-
-
-```{r}
-cacorr_fslacs
-summary(cacorr_fslacs)
-count(cacorr_fslacs, cow, cowf)
-
-camod_fsl <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) | cowf,
-               data=cacorr_fslacs, notes = FALSE)
-
-```
 
 <!-- To allow for a wider html table in output, put the following html code before the chunk -->
 <!-- <div style = "width:120%; height:auto; margin: auto;"> -->
@@ -1073,7 +2197,7 @@ summary(camod_cluster)
 </div>
 
 
-##### Key result: California state correction officers' wages relative to California private sector wages in the same cluster {#keycluster}
+##### Key result: California state correction officers' wages relative to California private sector wages in the same cluster}
 
 Note: I am still investigating this cluster - it may make sense to drop out several very low-paying jobs that probably are not alternatives to correctional officer.
 
@@ -1199,6 +2323,16 @@ I have collapsed occupations with fewer than 50 workers into an all-other group.
 The main thing I still want to do here, if I can, is control for the fact that correctional officer jobs are purported to be more stressful and dangerous than many other jobs. In addition, they require some skills and training that many other jobs do not - in particular, correctional officers in California require firearms training although, from all I have read, unlike police officers they do not carry firearms on the job (in part because they can be used against the correctional officers).
 
 I have not found good measures of job stress by occupation. There is a good measure of workplace injuries that result in days away from work. Correctional officer jobs are quite dangerous by this measure. I include this measure in one of the regressions below.
+
+
+```{r mod_caflsg}
+df <- caworkers %>%
+  filter(soc=="33-3012")
+  filter((cow==4 & soc=="33-3012") | 
+           (cow %in% 1:2 & soc!="33-3012"))
+count(df, cow)
+  
+```
 
 
 ```{r}
@@ -1443,15 +2577,15 @@ gap2020 <- keyfacts$wages_oes_time %>% filter(stabbr=="CA", year==2020) %>% .$pd
 
 # real wages in 2020
 df2 <- keyfacts$real_wages_oes %>%
-  mutate(rank=rank(desc(rwage)))
-rwageca <- keyfacts$corr_oes %>% filter(stabbr=="CA", year==2020) %>% .$rwage
-rwagerec2 <- keyfacts$corr_oes %>% 
+  mutate(rank=rank(desc(rppwage)))
+rppwageca <- keyfacts$corr_oes %>% filter(stabbr=="CA", year==2020) %>% .$rppwage
+rppwagerec2 <- keyfacts$corr_oes %>% 
   filter(year==2020, stabbr %in% state.abb) %>% 
-  arrange(-rwage) %>%
+  arrange(-rppwage) %>%
   filter(row_number()==2)
-rwage2 <- rwagerec2$rwage
-rwagename2 <- get_stname(rwagerec2$stabbr)
-usrwage <- keyfacts$corr_oes %>% filter(stabbr=="US", year==2020) %>% .$rwage
+rppwage2 <- rppwagerec2$rppwage
+rppwagename2 <- get_stname(rppwagerec2$stabbr)
+usrppwage <- keyfacts$corr_oes %>% filter(stabbr=="US", year==2020) %>% .$rppwage
 
 caltassoc <- keyfacts$corr_summary %>%
   filter(stabbr2=="CA") %>%
@@ -1474,18 +2608,18 @@ cfename2 <- keyfacts$statecfe %>% filter(rank==2) %>% .$stname
 
 -   Comparisons with state correctional officers in other states
 
-    -   California state correctional officer wages are the highest in the nation. Before adjusting for cost of living differences, the average wage is `r scales::percent(cawage / mawage - 1, accuracy=.1)` higher than the next-highest state, Massachusetts, and `r percent(cawage / uswage - 1, accuracy=.1)` higher than the U.S.-average correctional officer wage.
+    -   California state correctional officer wages are the highest in the nation. Before adjusting for cost of living differences, the average wage is r scales::percent(cawage / mawage - 1, accuracy=.1) higher than the next-highest state, Massachusetts, and r percent(cawage / uswage - 1, accuracy=.1) higher than the U.S.-average correctional officer wage.
 
-    -   California correctional officer wages have been consistently much higher than the United States average for state correctional officers and than the average for the second-highest state, for many years. The gap versus the United States average rose from `r percent(gap2016, .1)` in 2016 to `r percent(gap2020, .1)` in 2020.
+    -   California correctional officer wages have been consistently much higher than the United States average for state correctional officers and than the average for the second-highest state, for many years. The gap versus the United States average rose from r percent(gap2016, .1) in 2016 to r percent(gap2020, .1) in 2020.
 
-    -   California has the highest cost of living in the nation. After adjusting for cost of living, California correctional officer wages are still the highest in the nation. They are `r percent(rwageca / rwage2 -1, accuracy=.1)` above the second-highest state, `r rwagename2`, and `r percent(rwageca / usrwage - 1, accuracy=.1)` above the United States average.
+    -   California has the highest cost of living in the nation. After adjusting for cost of living, California correctional officer wages are still the highest in the nation. They are r percent(rppwageca / rppwage2 -1, accuracy=.1) above the second-highest state, r rppwagename2, and r percent(rppwageca / usrppwage - 1, accuracy=.1) above the United States average.
 
     -   All else equal, we might expect wages to be higher where educational attainment or experience is higher.
 
-        -   About `r percent(caltassoc, accuracy=.1)` of California correctional officers have less than an associate's degree, compared to `r percent(mdnltassoc, accuracy=.1)` in the median state.
-        -   The average California correctional officer has about `r number(calexp, accuracy=.1)` years of experience, compared to `r number(mdnexp, accuracy=.1)` in the median state.
+        -   About r percent(caltassoc, accuracy=.1) of California correctional officers have less than an associate's degree, compared to r percent(mdnltassoc, accuracy=.1) in the median state.
+        -   The average California correctional officer has about r number(calexp, accuracy=.1) years of experience, compared to r number(mdnexp, accuracy=.1) in the median state.
 
-    -   After adjusting for cost of living differences and controlling for education, experience, and demographic differences, California correctional officers' wages are about `r percent(cacfe, .1)` above the average state, and `r percent(cacfe / cfe2 -1, .1)` above the second-highest state, `r cfename2`. (This conclusion is based on [wage regressions](#keystatefe) run on a sample of `r comma(nobs(keyfacts$statemod))` correctional officers in the United States.)
+    -   After adjusting for cost of living differences and controlling for education, experience, and demographic differences, California correctional officers' wages are about r percent(cacfe, .1) above the average state, and r percent(cacfe / cfe2 -1, .1) above the second-highest state, r cfename2. (This conclusion is based on [wage regressions](keystatefe) run on a sample of r comma(nobs(keyfacts$statemod)) correctional officers in the United States.)
     
     
 ```{r}
@@ -1507,11 +2641,11 @@ calg_fe <- keyfacts$fefsl_df %>% filter(level=="local") %>% .$pdstate
 
 -   Comparisons with correctional officers within California
 
-    -   California state correctional officers wages have consistently been well above those of federal and local correctional officers in California. In 2020, according to the BLS OES research databsase, the average California state government correctional officer wage of `r comma(casg, prefix="$")` was `r comma(casg - cafg, prefix="$")` (`r percent(casg/cafg - 1, .1)`) above the average federal government correctional officer wage, and `r comma(casg - calg, prefix="$")` (`r percent(casg/calg - 1, .1)`) above the average local government correctional officer wage.
+    -   California state correctional officers wages have consistently been well above those of federal and local correctional officers in California. In 2020, according to the BLS OES research databsase, the average California state government correctional officer wage of r comma(casg, prefix="$") was r comma(casg - cafg, prefix="$") (r percent(casg/cafg - 1, .1)) above the average federal government correctional officer wage, and r comma(casg - calg, prefix="$") (r percent(casg/calg - 1, .1)) above the average local government correctional officer wage.
     -   According to the American Community Survey, California state correctional officers have:
-        -   Less education than their local government counterparts (`r number(casgacs$yoschool, .1)` years vs. `r number(calgacs$yoschool, .1)` years on average), and
-        -   More experience than both local government and federal government correctional officers in California (`r number(casgacs$exp, .1)` years vs. `r number(calgacs$exp, .1)` and `r number(cafgacs$exp, .1)` years on average).
-    -   An econometric model of wages based on ACS data suggests that after controlling for education, experience, and demographic characteristics, state correctional officer wages are `r percent(calg_fe, .1)` above local wages, and `r percent(cafg_fe, .1)` above federal wages. This might best be considered a lower bound, because the ACS data, before controls, show smaller differences in wages than the OES data.
+        -   Less education than their local government counterparts (r number(casgacs$yoschool, .1) years vs. r number(calgacs$yoschool, .1) years on average), and
+        -   More experience than both local government and federal government correctional officers in California (r number(casgacs$exp, .1) years vs. r number(calgacs$exp, .1) and r number(cafgacs$exp, .1) years on average).
+    -   An econometric model of wages based on ACS data suggests that after controlling for education, experience, and demographic characteristics, state correctional officer wages are r percent(calg_fe, .1) above local wages, and r percent(cafg_fe, .1) above federal wages. This might best be considered a lower bound, because the ACS data, before controls, show smaller differences in wages than the OES data.
 
 
 ```{r}
@@ -1526,7 +2660,7 @@ detect_cfe <- keyfacts$caclustercfe %>% filter(str_detect(occname, "Detectives a
 -   Comparisons with California private-sector workers in the Law, Public Safety, Corrections & Security job cluster
 
     -   State correctional officer wages, adjusted for intra-California regional price differences, after controlling for eduction, experience, and demographic characteristics, were higher than those of any private sector occupation in the Law, Public Safety, Corrections & Security job cluster.
-    -   They were `r percent(corrsg_cfe, .1)` above the cluster average. The private sector occupation in the cluster with the highest wages, detectives and criminal investigators, had average wages that were `r percent(detect_cfe, .1)` above the cluster average.
+    -   They were r percent(corrsg_cfe, .1) above the cluster average. The private sector occupation in the cluster with the highest wages, detectives and criminal investigators, had average wages that were r percent(detect_cfe, .1) above the cluster average.
 
 
 ```{r}
@@ -1543,7 +2677,7 @@ locoed_cfe <- keyfacts$caeduccfe %>% filter(str_detect(occname, "Locomotive engi
     -   I defined "occupations with similar educational profiles" as those where the percentage of private-sector California workers in the ocupation was within +/- 5 percentage points of the percentage for California state government correctional workers (approximately 73%).
     -   I grouped together occupations that have fewer than 50 observations.
     -   State correctional officer wages, adjusted for intra-California regional price differences, after controlling for eduction, experience, and demographic characteristics, were higher than those of any private sector occupation in with similar educational attainment.
-    -   They were `r percent(corred_cfe, .1)` above the group average. The private sector occupation in the group with the highest wages, locomotive engineers and operators, had average wages that were `r percent(locoed_cfe, .1)` above the group average.
+    -   They were r percent(corred_cfe, .1) above the group average. The private sector occupation in the group with the highest wages, locomotive engineers and operators, had average wages that were r percent(locoed_cfe, .1) above the group average.
 
 
 2.  Benefits
@@ -1551,291 +2685,6 @@ locoed_cfe <- keyfacts$caeduccfe %>% filter(str_detect(occname, "Locomotive engi
 
 
 # Appendix: Data preparation
-
-NOTE to self: Only run when data or methods change.
-
-
-## Regional price measures
-
-This section:
-
--   Gets regional price parity indexes (i.e., regional price indexes) from the [Bureau of Economic Analysis](https://apps.bea.gov/regional/downloadzip.cfm) (BEA) for states, Metropolitan Statistical Areas (MSAs), and the metro-nonmetro areas of individual states, for all available years (2008-2019).
--   Parses the data and saves for later use.
-
-We need these data because we want to adjust for regional price differences when comparing correctional officer salaries across states, and when comparing these salaries to private sector salaries in different regions of California.
-
-```{r rpp_info}
-
-# https://apps.bea.gov/regional/downloadzip.cfm
-# SARPP.zip is states
-# MARPP.zip is metropolitan areas
-# PARPP.zip is metro/non-metro areas within states
-
-
-# https://www.bea.gov/news/2020/real-personal-income-state-and-metropolitan-area-2019
-# Regional Price Parities in 2019
-# 
-# Regional price parities (RPPs) measure the differences in price levels across states and metropolitan areas for a given year and are expressed as a percentage of the overall national price level. The all items RPP covers all consumption goods and services, including housing rents. Areas with high/low RPPs typically correspond to areas with high/low price levels for rents.
-# 
-# States with the highest RPPs were Hawaii (119.3), California (116.4), and New York (116.3) (table 3).
-# States with the lowest RPPs were Mississippi (84.4), Arkansas (84.7), and Alabama (85.8).
-# Across states, California had the highest RPP for housing rents (153.6), and Mississippi had the lowest (60.0).
-# Large metropolitan areas with the highest RPPs were San Francisco-Oakland-Berkeley, CA (134.5), New York-Newark-Jersey City, NY-NJ-PA (125.7), and Los Angeles-Long Beach-Anaheim, CA (118.8) (table 6).
-# Large metropolitan areas with the lowest RPPs were Cleveland-Elyria, OH (89.9), St. Louis, MO-IL (90.1), and Cincinnati, OH-KY-IN (90.6).
-# Across large metropolitan areas, San Francisco-Oakland-Berkeley, CA, had the highest RPP for housing rents (200.3), and Cleveland-Elyria, OH, had the lowest (76.3).
-# Across all metropolitan areas, San Jose-Sunnyvale-Santa Clara, CA, had the highest RPP for housing rents (224.0), and Beckley, WV, had the lowest (44.0).
-```
-
-
-```{r get_rpp, eval=FALSE}
-# non metro price indexes
-# https://apps.bea.gov/iTable/iTable.cfm?reqid=70&step=1&acrdn=8
-
-#.. state price indexes ----
-# con <- unz(paste0(dir, "/", "SQGDP.zip"), fn) # read directly from zip file
-zname <- "SARPP.zip"
-fn <- "SARPP_STATE_2008_2019.csv"
-con <- unz(paste0(rppdir, zname), fn) # read directly from zip file
-df <- read_csv(con, col_types = cols(.default = "c"))
-
-sarpp1 <- df %>%
-  filter(LineCode=="1") %>%
-  mutate(stfips=str_sub(GeoFIPS, 1, 2)) %>%
-  left_join(stcodes %>% select(stfips, stabbr), by = "stfips")
-sarpp1 %>% select(stfips, stabbr, GeoName)
-  
-sarpp <- sarpp1 %>%
-  pivot_longer(cols=`2008`:`2019`, names_to = "year", values_to = "rpp") %>%
-  mutate(stfips=as.integer(stfips), year=as.integer(year), rpp=as.numeric(rpp) / 100) %>%
-  select(stabbr, stfips, year, rpp)
-
-sarpp %>%
-  filter(stabbr %in% c("US", "CA", "NY", "FL", "TX", "MA")) %>%
-  ggplot(aes(year, rpp, colour=stabbr)) +
-  geom_line() +
-  geom_point()
-
-#.. metropolitan area indexes ----
-zname <- "MARPP.zip"
-fn <- "MARPP_MSA_2008_2019.csv"
-con <- unz(paste0(rppdir, zname), fn) # read directly from zip file
-df <- read_csv(con, col_types = cols(.default = "c"))
-glimpse(df)
-
-marpp <- df %>%
-  filter(LineCode=="1") %>%
-  pivot_longer(cols=`2008`:`2019`, names_to = "year", values_to = "rpp") %>%
-  mutate(fips=as.integer(GeoFIPS), 
-         year=as.integer(year), 
-         rpp=as.numeric(rpp) / 100) %>%
-  select(fips, geoname=GeoName, year, rpp)
-
-
-#.. metro-nonmetro by state price indexes ----
-zname <- "PARPP.zip"
-fn <- "PARPP_PORT_2008_2019.csv"
-con <- unz(paste0(rppdir, zname), fn) # read directly from zip file
-df <- read_csv(con, col_types = cols(.default = "c"))
-glimpse(df)
-
-parpp <- df %>%
-  filter(LineCode=="1") %>%
-  pivot_longer(cols=`2008`:`2019`, names_to = "year", values_to = "rpp") %>%
-  mutate(type=case_when(str_sub(GeoFIPS, 3, 5)=="998" ~ "metro",
-                        str_sub(GeoFIPS, 3, 5)=="999" ~ "nonmetro",
-                        str_sub(GeoFIPS, 3, 5)=="000" ~ "US",
-                        TRUE ~ "ERROR"),
-         stfips=str_sub(GeoFIPS, 1, 2),
-         year=as.integer(year), 
-         rpp=as.numeric(rpp) / 100) %>%
-  left_join(stcodes %>% select(stfips, stabbr), by = "stfips") %>%
-  mutate(stfips=as.integer(stfips)) %>%
-  select(stfips, stabbr, geoname=GeoName, type, year, rpp)
-
-#.. which ones are in California ----
-carpp <- marpp %>%
-  filter(str_detect(geoname, coll("CA"))) %>%
-  mutate(stabbr="CA", type="metro") %>%
-  bind_rows(parpp %>%
-              filter(type=="nonmetro", stabbr=="CA") %>%
-              select(stabbr, geoname, type, year, rpp))
-count(carpp, fips, geoname)
-
-
-# create a lagyear variable for each file so that we can merge against 1 year earlier
-sarpp <- sarpp %>% mutate(yearplus1=year + 1)
-marpp <- marpp %>% mutate(yearplus1=year + 1)
-carpp <- carpp %>% mutate(yearplus1=year + 1)
-
-save(sarpp, marpp, carpp, file=here::here("data", "rpp.rdata"))
-
-# There are 26 Californial regional price indexes
-# fips  geoname                                                                  n
-#    <chr> <chr>                                                                <int>
-#  1 12540 Bakersfield, CA (Metropolitan Statistical Area)                         12
-#  2 17020 Chico, CA (Metropolitan Statistical Area)                               12
-#  3 20940 El Centro, CA (Metropolitan Statistical Area)                           12
-#  4 23420 Fresno, CA (Metropolitan Statistical Area)                              12
-#  5 25260 Hanford-Corcoran, CA (Metropolitan Statistical Area)                    12
-#  6 31080 Los Angeles-Long Beach-Anaheim, CA (Metropolitan Statistical Area)      12
-#  7 31460 Madera, CA (Metropolitan Statistical Area)                              12
-#  8 32900 Merced, CA (Metropolitan Statistical Area)                              12
-#  9 33700 Modesto, CA (Metropolitan Statistical Area)                             12
-# 10 34900 Napa, CA (Metropolitan Statistical Area)                                12
-# 11 37100 Oxnard-Thousand Oaks-Ventura, CA (Metropolitan Statistical Area)        12
-# 12 39820 Redding, CA (Metropolitan Statistical Area)                             12
-# 13 40140 Riverside-San Bernardino-Ontario, CA (Metropolitan Statistical Area)    12
-# 14 40900 Sacramento-Roseville-Folsom, CA (Metropolitan Statistical Area)         12
-# 15 41500 Salinas, CA (Metropolitan Statistical Area)                             12
-# 16 41740 San Diego-Chula Vista-Carlsbad, CA (Metropolitan Statistical Area)      12
-# 17 41860 San Francisco-Oakland-Berkeley, CA (Metropolitan Statistical Area)      12
-# 18 41940 San Jose-Sunnyvale-Santa Clara, CA (Metropolitan Statistical Area)      12
-# 19 42020 San Luis Obispo-Paso Robles, CA (Metropolitan Statistical Area)         12
-# 20 42100 Santa Cruz-Watsonville, CA (Metropolitan Statistical Area)              12
-# 21 42200 Santa Maria-Santa Barbara, CA (Metropolitan Statistical Area)           12
-# 22 42220 Santa Rosa-Petaluma, CA (Metropolitan Statistical Area)                 12
-# 23 44700 Stockton, CA (Metropolitan Statistical Area)                            12
-# 24 46700 Vallejo, CA (Metropolitan Statistical Area)                             12
-# 25 47300 Visalia, CA (Metropolitan Statistical Area)                             12
-# 26 49700 Yuba City, CA (Metropolitan Statistical Area)                           12
-
-
-```
-
-## Occupational Employment and Wage Statistics (OES or OESW)
-
-This section downloads, parses, and saves:
-
--   [OES research data](https://www.bls.gov/oes/current/oes_research_estimates.htm) for the government sector, many years. This has the advantage of breaking out ownership (state, local government), by state, by detailed occupation, for many years.
-
-```{r bls_research_corr, eval=FALSE}
-# https://www.bls.gov/oes/current/oes_research_estimates.htm
-# The OEWS program provides wage and employment estimates by state and industry
-# beginning with the May 2012 reference period. These estimates are intended for
-# research purposes, and users should be aware of the limitations of the data.
-# Estimates prior to May 2012 are not available. Estimates are only available
-# for states; industry-specific estimates for metropolitan areas are not
-# available. Estimates are only available for detail and major occupation
-# groups; industry-specific estimates for broad and minor occupation groups are
-# not available.
-
-urlbase <- "https://www.bls.gov/oes/special.requests/"
-
-stcodes
-# Add Guam to stcodes
-stcodes2 <- bind_rows(stcodes,
-                      tibble(stabbr="GU", stfips="66", stname="Guam"))
-
-#.. All NAICS sectors for 2016-2020 ----
-# clean up and slim down the externally created file
-oesres1 <- readRDS(paste0(resdir, "oesres_allsectors.rds"))
-glimpse(oesres1)
-count(oesres1, stabbr, area, area_title)
-count(oesres1, annual) # 24641=1, 4.5m=NA  # record does not have hourly data
-count(oesres1, hourly)  # record does not have annual data
-count(oesres1, o_group)  # for some years, tells whether it is detailed, major, total, or something else
-count(oesres1, group) # same
-count(oesres1, group, o_group)
-count(oesres1, i_group)
-
-
-oesres2 <- oesres1 %>%
-  filter(stabbr %in% c("DC", state.abb)) %>%
-  mutate(ogroup=ifelse(is.na(o_group), group, o_group)) %>%
-  select(stabbr, year, occ, occname, ogroup,
-         igroup=i_group, naics, naicstitle=naics_title, 
-         emp=tot_emp, hmean=h_mean, amean=a_mean)
-count(oesres2, ogroup)
-
-count(oesres2, naics, naicstitle)
-
-# assign level to corrections
-f_corrlevel <- function(occ, naics){
-  case_when(occ != "33-3012" ~ NA_character_,
-            naics %in% c("99", "999000") ~ "fslg",
-            naics == "999100" ~ "federal",
-            naics == "999200" ~ "state",
-            naics == "999300" ~ "local",
-            TRUE ~ "private")
-  }
-
-oesres3 <- oesres2 %>%
-  mutate(level=f_corrlevel(occ, naics))
-count(oesres3, level)
-
-saveRDS(oesres3, paste0(resdir, "oesres_clean.rds"))
-
-
-```
-
-### California EDD OESW data for California
-
-```{r caledd_oesw, eval=FALSE}
-# from open data
-url <- "https://data.edd.ca.gov/api/views/pwxn-y2g5/rows.csv?accessType=DOWNLOAD"
-fn <- "Occupational_Employment_and_Wage_Statistics__OEWS_.csv"
-# download.file(url, paste0(oeswcad, fn), mode="wb")  # only download if data base changed
-
-df1 <- read_csv(paste0(oeswcad, fn), col_types=cols(.default = "c"))
-glimpse(df1)
-summary(df1)
-
-df2 <- df1 %>%
-  select(atype=1, aname=2, year=3, qtr=4, indname=5, soc=6, occname=7, wtype=8, emp=9, wage=10)
-count(df2, atype) # 4
-# California-Statewide	1598			
-# California - Statewide	19438			
-# Metropolitan Area	355428			
-# OES Survey Region	38744	
-count(df2, atype, aname)  # 43
-count(df2, indname)  # 1, all industries
-count(df2, soc, occname)  # 1,110
-count(df2, wtype)  # 2 Annual wage or salary, Hourly wage
-count(df2, qtr)  # only 1
-
-# qy(1, 2000) qtr <- c("1", "2") year <- c("2000", "2001") btools::qy(as.integer(qtr), as.integer(year))
-
-df3 <- df2 %>%
-  filter(str_detect(wtype, "Annual")) %>%
-  select(atype, aname, year, soc, occname, emp, wage) %>%
-  mutate(year=as.integer(year),
-         emp=as.numeric(emp),
-         wage=as.numeric(wage),
-         soc=ifelse(soc=="0",
-                    soc,
-                    paste0(str_sub(soc, 1, 2), "-", str_sub(soc, 3, -1))))
-count(df3, soc, occname)
-
-# fix some errors in the data!
-df4 <- df3 %>%
-  # wow! shouldn't have to fix this
-  mutate(emp=ifelse(emp==0, NA_real_, emp),
-         wage=ifelse(wage==0, NA_real_, wage),
-         occname=str_replace(occname, coll(" **"), ""),
-         occname=str_replace(occname, coll("*"), ""))
-
-diffnames <- df4 %>%
-  select(soc, year, occname) %>%
-  distinct() %>%
-  group_by(soc) %>%
-  mutate(nnames=length(unique(occname))) %>%
-  ungroup %>%
-  filter(nnames > 1) %>%
-  arrange(soc, year)
-
-# get most recent occname for each code
-df5 <- df4  %>%
-  group_by(soc) %>%
-  mutate(mroccname=unique(occname[year==max(year)])) %>%
-  ungroup
-
-check <- df5 %>% filter(mroccname != occname)
-
-caledd_oesw <- df5 %>%
-  select(atype, aname, year, soc, occname=mroccname, emp, wage)
-saveRDS(caledd_oesw, here::here("data", "caledd_oesw.rds"))
-
-```
 
 ## Job clusters
 
@@ -1866,475 +2715,7 @@ saveRDS(job_cluster, here::here("data", "job_cluster.rds"))
 
 ```
 
-## PUMA-MSA crosswalk for California
 
-This section:
-
--   Gets a [crosswalk](https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls) from [IPUMS USA](https://usa.ipums.org/) between:
--   Public Use Microdata Areas (PUMAs), relatively small geographic areas defined for and used in the Census Bureau's American Community Survey (ACS) that is rarely used outside of the ACS; (there are 265 PUMAs in California)l and
--   Metropolitan Statistical Areas, larger and more-widely known geographic areas; (there are 26 MSAs in California);
--   Parses the data
--   Creates a California subset, and
--   Saves for later use
-
-We need such a crosswalk for two reasons:
-
--   We only have BEA regional price indexes for MSAs, not for PUMAs. ACS microdata identifies the PUMA for each person in the file, but not their MSA. Thus, we need a way to map the 265 California PUMAs in the ACS to the 26 California MSAs, so that we can get the MSA regional price index for each person in the data.
--   There are relatively few observations in some PUMAs for some occupational categories. Thus, the geographically larger MSAs can be more useful for substate regional analyses in California than the PUMAs. Plus, MSAs are more familiar to most people than are PUMAs.
-
-```{r acs_pumas_notes}
-# https://www.census.gov/programs-surveys/geography/guidance/geo-areas/pumas.html
-# Public Use Microdata Areas (PUMAs) are non-overlapping, statistical geographic
-# areas that partition each state or equivalent entity into geographic areas
-# containing no fewer than 100,000 people each. They cover the entirety of the
-# United States, Puerto Rico, Guam, and the U.S. Virgin Islands. The Census
-# Bureau defines PUMAs for the tabulation and dissemination of decennial census
-# and American Community Survey (ACS) Public Use Microdata Sample (PUMS) data.
-# Additionally, the ACS and Puerto Rico Community Survey use them to disseminate
-# their respective period estimates.
-
-# The delineation of new PUMAs occurs after the completion of the decennial
-# census as part of a program involving the State Data Centers (SDCs). Decennial
-# census population counts and updated census tracts are critical inputs into
-# the delineation process.
-
-# PUMA Character 5 Public use microdata area code (PUMA) based on 2010 Census
-# definition (areas with population of 100,000 or more, use with ST for unique
-# code) 00100..70301 .Public use microdata area codes
-
-# https://www2.census.gov/geo/docs/reference/puma/
-# https://www2.census.gov/geo/docs/reference/puma/2010_PUMA_Names.txt
-
-# https://www.brookings.edu/wp-content/uploads/2018/07/ES_THP_071018_where_work_pays_tech_appendix.pdf
-# IPUMS has created a crosswalk between PUMAs and metropolitan statistical areas
-# (MSAs) that denotes what percent of a given PUMA is in a given MSA. We use
-# this crosswalk to group PUMAs into metropolitan areas and state
-# non-metropolitan areas. An individual is characterized as living in a MSA if
-# they live in a PUMA that is more than 50% in that MSA. They are classified as
-# living in a state nonmetropolitan area if they live in a PUMA that is less
-# than 50% in any metropolitan area. All states except for Delaware, New Jersey,
-# and Rhode Island (and the District of Columbia) have non-metropolitan areas.
-
-# PUMAs to MSAs -- looks like 24-26 MSAs
-# https://usa.ipums.org/usa-action/variables/met2013#description_section
-# https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls
-# https://rdrr.io/github/greaterlouisvilleproject/glptools/man/MSA_PUMA.html
-
-
-# PUMAs to counties -- 58 counties
-# https://www.psc.isr.umich.edu/dis/data/resource/detail/1527.html
-# https://www.psc.isr.umich.edu/dis/workshop/utilities/p2c.html
-# https://www.psc.isr.umich.edu/dis/data/resource/detail/1528.html
-# https://www.psc.isr.umich.edu/dis/workshop/utilities/p2c.html
-# Three additional fields are output:  the five‐digit FIPS county code, county name, and total county population based on the PUMA populations given in the p2c.equ cross‐walk file.
-
-```
-
-```{r acs_pumas_caxwalk, eval=FALSE}
-# https://usa.ipums.org/usa/resources/volii/MSA2013_PUMA2010_crosswalk.xls
-pumasdir <- r"(E:\data\acs\pums\pumas\)"
-pfn <- "MSA2013_PUMA2010_crosswalk.xls"
-
-# MSA Code	MSA Title	State FIPS Code	State Name	PUMA Code	PUMA Name	MSA 2010 Population	PUMA 2010 Population	Intersection 2010 Population	Percent MSA Population	Percent PUMA Population
-
-pumamsa1 <- read_excel(paste0(pumasdir, pfn)) 
-names(pumamsa1)
-pumamsa2 <- pumamsa1 %>%
-  setNames(c("msacode", "msaname", "stfips", "stname", "puma", "pumaname",
-             "msapop", "pumapop", "interpop",
-             "pctmsa", "pctpuma")) 
-# do we assign any puma to more than one msa??
-dups <- pumamsa2 %>%
-  group_by(puma, pumaname) %>%
-  mutate(n=n()) %>%
-  ungroup %>%
-  filter(n > 1) %>%
-  arrange(puma, pumaname, desc(interpop)) 
-
-pumamsa3 <- pumamsa2 %>%
-  # for each puma, keep only the msa to which it has the most assigned pop (interpop)
-  # so that we assign 1 and only 1 msa for each puma %>%
-  arrange(stfips, puma, pumaname, desc(interpop)) %>%
-  group_by(puma, pumaname) %>%
-  filter(row_number()==1) %>%
-  ungroup %>%
-  mutate(across(c(stfips, puma, msacode), as.integer))
-
-pumas_caxwalk <- pumamsa3 %>%
-  filter(stfips==6)
-
-# how far off are we?
-pumas_caxwalk %>%
-  group_by(msacode, msaname) %>%
-  summarise(msapop=first(msapop),
-            pumasum=sum(interpop),
-            .groups = "drop") %>%
-  mutate(pdiff=pumasum / msapop -1) %>%
-  arrange(-abs(pdiff)) # almost perfect
-
-saveRDS(pumas_caxwalk, here::here("data", "pumas_caxwalk.rds"))
-
-```
-
-## Worplace injuries
-
-```{r eval=FALSE}
-url_base <- "https://download.bls.gov/pub/time.series/hc/"
-files <- c("hc.age", "hc.case", "hc.category", "hc.category2", "hc.contacts", "hc.data.0.Current", "hc.data.1.AllData", "hc.datatype", "hc.event", "hc.footnote", "hc.gender", "hc.industry", "hc.los", "hc.nature", "hc.occupation", "hc.pob", "hc.race", "hc.series", "hc.source", "hc.txt")
-keep <- setdiff(files, "hc.data.0.Current")
-
-url_base <- "https://download.bls.gov/pub/time.series/cs/"
-files <- c("cs.age", "cs.case", "cs.category", "cs.contacts", "cs.data.0.Current", "cs.data.1.AllData", "cs.datatype", "cs.event", "cs.footnote", "cs.gender", "cs.hour", "cs.industry", "cs.los", "cs.nature", "cs.occupation", "cs.ownership", "cs.pob", "cs.race", "cs.series", "cs.source", "cs.special", "cs.state", "cs.time", "cs.txt", "cs.weekday")
-keep <- setdiff(files, "cs.data.0.Current")
-
-for(file in keep){
-  url <- paste0(url_base, file)
-  path <- paste0(wpid, "cs/",  file)
-  download.file(url, path, mode="wb")
-}
-
-# get and save the workplace injuries data
-# Field #/Data Element		Length		Value(Example)
-# 1.  series_id			  17		HCUSH332233
-# 2.  year			   4		1998
-# 3.  period			   3		M01
-# 4.  value			  12		2360
-# 5.  footnote_codes		  10		It varies
-# 
-# The series_id (HCUSH332233) can be broken out into:
-# Code				=			Value
-# survey abbreviation		=			HC
-# seasonal adjustment code	=			U
-# case category			=			SH
-# detail code			=			3322
-# datatype code			=			3
-# case type code			=			3
-
-
-# datatype_code	datatype_text
-# 3	Injury and illness rate per 10,000 full-time workers
-# 6	Injury and illness Cases
-# 7	Median days lost
-
-
-# case_code	case_text
-# 3	Selected characteristic by detailed industry
-# A	Industry division or selected characteristic by age
-# E	Industry division or selected characteristic by detailed event or exposure
-# G	Industry division or selected characteristic by gender
-# H	Industry division or selected characteristic by hours at work
-# L	Industry division or selected characteristic by length of service
-# M	Industry division or selected characteristic by special combinations
-# N	Industry division or selected characteristic by detailed nature of condition
-# O	Industry division or selected characteristic by detailed occupation
-# P	Industry division or selected characteristic by detailed part of body affected
-# R	Industry division or selected characteristic by race or ethnicity
-# S	Industry division or selected characteristic by detailed source of injury/illness
-# T	Industry division or selected characteristic by time of day
-# W	Industry division or selected characteristic by day of week
-
-# ownership_code	ownership_name
-# 0	All ownerships
-# 1	Private industry
-# 7	State government
-# 8	Local government
-# 9	State and local government combined
-
-wpiown <- read_tsv(paste0(wpid, "cs/", "cs.ownership"))
-wpioccs <- read_tsv(paste0(wpid, "cs/", "cs.occupation"), col_types = "ccccc")
-wpistates <- read_tsv(paste0(wpid, "cs/", "cs.state"), col_types = "ccccc")
-
-
-
-# df <- read_table(paste0(wpid, "cs/", "cs.data.1.AllData"), col_types = "cicnc")  # TOO SLOW!
-
-a <- proc.time()
-df1 <- vroom(paste0(wpid, "cs/", "cs.data.1.AllData"), col_types = "cicnc")
-b <- proc.time()
-b - a # 31 secs
-saveRDS(df1, paste0(wpid, "wpi_all.rds"))
-
-# count(df1, year)
-
-df2 <- df1 %>%
-  filter(str_sub(series_id, 1, 6)=="CSU00X",  # occupational detail
-         str_sub(series_id, 13, 14)=="3O")  # datatype and case code -- 3"O" not zero
-rm(df1)
-gc(verbose=TRUE)
-
-
-# https://github.com/tidyverse/readr/issues/1145
-#..you can install the development versions of cpp11 and then re-install readr.
-# devtools::install_github("r-lib/cpp11")
-# I have NOT installed dev versions of vroom and reader but here is cood to do so
-# devtools::install_dev("vroom")
-#  or devtools::install_github("r-lib/vroom/vroom")
-# devtools::install_github("tidyverse/readr")
-
-
-# how to parse series_id
-# survey abbreviation		=			cs
-# seasonal adjustment code	=			U
-# category code			=			00X
-# detail code			=			00XXXX
-# datatype code			=			3
-# case code			=			E
-# ownership code			=			1
-# state code			=			00
-df3 <- df2 %>%
-  mutate(detail=str_sub(series_id, 7, 12),
-         own=str_sub(series_id, 15, 15) %>% as.integer,
-         stfips=str_sub(series_id, 16, 17)) %>%
-  select(series_id, detail, own, stfips, year, value, footnote_codes)
-count(df3, detail)  # 1,253
-count(df3, own)  # 0, 1, 7, 8, 9
-count(df3, stfips)  # 47 including US
-count(df3, year) # 2011-2019
-count(df3, footnote_codes) %>% NA for all
-
-# create factors
-df4 <- df3 %>%
-  rename(ocode=detail) %>%
-  left_join(wpiown %>% 
-              select(own=ownership_code, ownf=ownership_name),
-            by="own") %>%
-  left_join(wpioccs %>% 
-              select(ocode=occupation_code, oname=occupation_text, displevel=display_level),
-            by = "ocode") %>%
-  left_join(wpistates %>% select(stfips=state_code, stname=state_name), by="stfips") %>%
-  left_join(stcodes %>% select(stname, stabbr), by="stname") %>%
-  mutate(stfips=as.integer(stfips), 
-         stabbr=case_when(stfips==00 ~ "US",
-                          stfips==66 ~ "GU",
-                          TRUE ~ stabbr))
-summary(df4)
-count(df4, own, ownf)
-count(df4, stfips, stname)
-count(df4, stfips, stabbr, stname)
-count(df4, displevel)
-
-glimpse(df4)
-wpirates <- df4 %>%
-  select(stabbr, year, own, ownf, ocode, oname, displevel, value)
-summary(wpirates)
-
-saveRDS(wpirates, here::here("data", "wpirates.rds"))
-
-
-```
-
-## American Community Survey (ACS) data preparation
-
-This section has two subsections:
-
--   Preparation of codes needed for use with the ACS
--   Preparation of the two main ACS data subsets used in the analysis, extracting relevant information from an SQLITE database of the ACS. This program does not get the full ACS - I did that in a separate program that downloaded the ACS and created the SQLITE database. That was done separately because of the size of the ACS.
-
-### Preparation of ACS codes
-
-```{r}
-# fn <- paste0(pumsdocs, "PUMS_Data_Dictionary_2015-2019.csv")
-# dict <- read_csv((fn), col_names=FALSE)
-
-```
-
-#### Define a "worker"
-
-This section defines variables to pull from the ACS, and what a "worker" is:
-
--   The 2015-2019 ACS is a sample of approximately 15 million people nationally.
--   Only some of them are workers (some are children, some are retired, some are prisoners, some are unemployed, etc.)
--   Currently I define a worker as someone who:
--   Is an employee of a private not-for-profit or for-profit entity, or a federal, state, or local government employee. I exclude anyone who is self-employed, or working without pay on a family business or farm, or was unemployed; and
--   Is at least 18 years old
--   Earned at least \$10,000
-
-We need to define a worker for purposes of comparing correctional officer wages to those of other workers. The definition here is based largely on definitions used in academic papers that estimate wage regressions.
-
-
-#### Get a crosswalk of occupation codes
-
-This section:
-
--   Gets a [crosswalk](https://www2.census.gov/programs-surveys/acs/tech_docs/pums/code_lists/ACSPUMS2015_2019CodeLists.xlsx) between occupation codes used by the Bureau of the Census in the ACS and the somewhat more detaled occupation codes maintained by the Bureau of Labor Statistics and also CalHR (California Human Resources)
--   Parses and saves the data for later use.
-
-We need this crosswalk so that we can (a) identify correctional officers and people in other occupations, and (b) collapse identify selected occupations that are similar in some way to correctional officers.
-
-```{r acs_occ_codes, eval=FALSE}
-acsocodes1 <- read_excel(paste0(pumsdocs, fnpumscodes),
-                      sheet="OCCP & SOCP",
-                      range="A11:C881",
-                      col_names=c("occp", "soc", "occname"))
-acsocodes <- acsocodes1 %>%
-  filter(nchar(occp)==4) %>%
-  mutate(occp=as.integer(occp))
-
-saveRDS(acsocodes, here::here("data", "acsocodes.rds"))
-
-# https://www.labormarketinfo.edd.ca.gov/OccGuides/detail.aspx?Soccode=518031&Geography=0601000000
-
-```
-
-#### Define other ACS codes
-
-This section has functions that develop variables that will serve as controls in regression equations, generally by collapsing detailed ACS variables into more-aggregated categories. For example, it:
-
--   Race and ethnicity variables are collapsed from 9 race categories by multiple ethnic categories into a single variable with 5 categories
--   Years of schooling is calculated
--   Educational attainment is collapsed into
--   Work experience is calculated as age minus years of schooling minus 6
-
-### Create ACS data subsets to be used in the analysis
-
-```{r connect_acsdb}
-# make sure to have sourced the functions files first
-# and defined constants
-
-# dbDisconnect(db) # in case it is connected - will throw an error if not, but that's ok
-db <- dbConnect(SQLite(), dbname=acsdb)
-
-```
-
-#### Create subset representing all state correctional workers in the U.S.
-
-This subset has approximately 9,800 observations.
-
-We construct real wages for each worker by using the BEA state-level regional price parity index for the state for the relevant year of the person sampled (one of 2015-2019).
-
-```{r acs_corrections_US, eval=FALSE}
-# get all state government corrections officers in the US
-corr_sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE occp=3802") # 10 secs
-system.time(corr_base <- collect(tbl(db, sql(corr_sqlcmd))))  # 3 secs
-glimpse(corr_base) # 21,989 obs
-summary(corr_base)
-count(corr_base, st)
-count(corr_base, puma, st)
-count(corr_base %>% filter(st==06), puma) %>% arrange(-n)
-max(corr_base$puma) # 70301
-
-corr_workers <- corr_base %>%
-  filter(eval(parse(text=sworker))) %>% 
-  filter(cow == 4) %>%  # state government
-  mutate(f_create_vars(.)) %>%
-  left_join(stcodes %>% 
-              select(st=stfips, stabbr) %>% 
-              mutate(st=as.integer(st)),
-            by="st") %>%
-  left_join(sarpp %>%
-              select(stabbr, year, rpp),  # merge on the prior year
-            by=c("stabbr", "year")) %>%
-  mutate(rppwagp=rwagp / rpp,  # rwagp is real wage (adjusted for year), rppwagp is region adjusted
-         lrppwagp=log(rppwagp)) %>%  
-  group_by(stabbr) %>%
-  mutate(n=n()) %>%
-  ungroup
-
-summary(corr_workers)
-
-saveRDS(corr_workers, here::here("data", "corr_workers.rds"))
-
-```
-
-#### Create subset representing all sampled workers in California
-
-This subset has approximately 640,000 observations.
-
-We construct real wages for each California worker by using the BEA MSA-level regional price parity index for the worker's California MSA, or for non-metro areas as a whole if the worker is not in an MSA, for the relevant year of the person sampled (one of 2015-2019).
-
-```{r acs_caworkers, eval=FALSE}
-sqlcmd <- paste0("SELECT ", acsvars_string, " FROM pus WHERE st=06") # 10 secs
-
-system.time(cadf <- collect(tbl(db, sql(sqlcmd))))  # 4 secs
-glimpse(cadf)
-summary(cadf)
-count(cadf, st) # 1.9m
-count(cadf, puma) %>% arrange(-n)
-
-# cadf %>% 
-#   mutate(year=str_sub(serialno, 1, 4)) %>% 
-#   group_by(year) %>%
-#   summarise(minadjinc=min(adjinc), maxadjinc=max(adjinc))
-#   year  minadjinc maxadjinc
-#   <chr>     <int>     <int>
-# 1 2015    1080470   1080470
-# 2 2016    1073449   1073449
-# 3 2017    1054606   1054606
-# 4 2018    1031452   1031452
-# 5 2019    1010145   1010145
-
-caworkers <- cadf %>%
-  filter(eval(parse(text=sworker))) %>%
-  filter(cow %in% 1:5) %>%
-  mutate(f_create_vars(.),
-         cowf=f_cow(cow)) %>%
-  # get state abbreviation
-  left_join(stcodes %>% 
-              select(st=stfips, stabbr) %>% 
-              mutate(st=as.integer(st)),
-            by="st") %>%
-  left_join(acsocodes, by="occp") %>%
-  # get msa (fips) code and msaname that the puma is (mostly) within
-  left_join(pumas_caxwalk %>% 
-              select(puma, pumaname, msacode, msaname),
-            by = "puma") %>%
-  # get regional price parity index
-  left_join(carpp %>% 
-              filter(type=="metro") %>%
-              select(msacode=fips, year, rpp),
-            by=c("msacode", "year")) %>%
-  mutate(msacode=ifelse(is.na(msacode), -9999, msacode),
-         msaname=ifelse(is.na(msaname), "nonmetro", msaname),
-         type=ifelse(msacode==-9999, "nonmetro", "metro")) %>%
-  # merge again to get regional price parity for the nonmetro areas
-  left_join(carpp %>% 
-              filter(type=="nonmetro") %>%
-              select(type, year, rpp_nonmetro=rpp),
-            by=c("type", "year")) %>%
-  mutate(rpp=ifelse(type=="nonmetro", rpp_nonmetro, rpp),
-         rppwagp=rwagp / rpp,  # rwagp is real wage (adjusted for year), rppwagp is region adjusted
-         lrppwagp=log(rppwagp)) %>%
-  select(-rpp_nonmetro)
-summary(caworkers)
-
-count(caworkers, occp, occname) %>% arrange(-n)
-count(caworkers, occp, soc, occname) %>% filter(str_sub(soc, 1, 3)=="33-")
-
-saveRDS(caworkers, here::here("data", "caworkers.rds"))
-
-```
-
-
-#### Create ACS summary of educational attainment of california workers by occupation and sector
-
-```{r job_educ, eval=FALSE}
-cajobeduc <- caworkers %>%
-  group_by(soc, occp, occname, cow, cowf, edattain) %>%
-  summarise(n=n(),
-            wtdn=sum(pwgtp),
-            yoschool=median(yoschool, na.rm=TRUE),
-            ltassoc=sum(ltassoc * pwgtp),
-            rwagp=sum(rwagp * pwgtp),
-            rppwagp=sum(rppwagp * pwgtp),
-            .groups="drop") %>%
-  group_by(soc, occp, occname, cow, cowf) %>%
-  summarise(n=sum(n),
-            ltassoc=sum(ltassoc),
-            assoc=sum(wtdn[edattain %in% c("associate")]),
-            ba=sum(wtdn[edattain %in% c("BA")]),
-            maplus=sum(wtdn[edattain %in% c("MA+")]),
-            rwagp=sum(rwagp),
-            rppwagp=sum(rppwagp),
-            # MUST put wtdn last so it is not revised before being used
-            wtdn=sum(wtdn),
-            .groups="drop") %>%
-  mutate(across(c(ltassoc, assoc, ba, maplus, rwagp, rppwagp), ~ .x / wtdn)) %>%
-  select(soc, occname, occp, cow, cowf, n, wtdn, everything())
-summary(cajobeduc)
-
-saveRDS(cajobeduc, here::here("data", "cajobeduc.rds"))
-
-```
 
 
 ## Benefits
@@ -2383,6 +2764,64 @@ saveRDS(cajobeduc, here::here("data", "cajobeduc.rds"))
 
 ```
 
+
+# OLD and Miscellaneous
+
+```{r include=FALSE}
+# Number of correction officers per capita and average wage, not interesting
+pdata <- corr_oes %>%
+  filter(year==2020) %>%
+  left_join(spop.a %>%
+              filter(year==2020) %>%
+              select(stabbr, pop=value),
+            by=c("stabbr")) %>%
+  mutate(epop100k=emp / (pop / 100e3))
+
+pdata %>%
+  ggplot(aes(epop100k, wage, label=stabbr)) +
+  geom_point() +
+  geom_text()
+
+```
+
+
+### Wages in California relative to other states, over time, based on the OES
+
+```{r oes_ts, include=TRUE, fig.width=6, fig.height=8}
+# count(corr_oes, stabbr)
+pdata <- corr_oes %>%
+  filter(stabbr %in% c("US", "CA", compstates)) %>%
+  group_by(year) %>%
+  mutate(pdwage=wage / wage[stabbr=="US"] * 1 - 1,
+         stname=get_stname(stabbr)) %>%
+  ungroup %>%
+  filter(stabbr != "US")
+
+# cols <- c('#a6cee3','#1f78b4','black','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6')
+cols <- c('#a6cee3','red', 'black','#33a02c','#fb9a99','#1f78b4','#fdbf6f','#ff7f00','#cab2d6')
+
+capt1 <- paste0("\nSource: ", source_oesres, ".")
+capt2 <- "Note: Not adjusted for price differences across states."
+capt <- paste0(capt1, "\n", capt2)
+
+p <- pdata %>%
+  ggplot(aes(year, pdwage, colour=stabbr)) +
+  geom_line(size=1.0) +
+  geom_point() +
+  geom_hline(yintercept = 0) +
+  scale_colour_manual(values=cols) +
+  # scale_size_manual(values=c(1, rep(.5, 8))) +
+  labs(y="% above or below U.S. average", x=NULL,
+       caption=capt) +
+  scale_y_continuous(breaks=seq(-1, 1, .05), labels = label_percent(accuracy=1)) +
+  ggtitle("State correctional officers' salaries relative to U.S. average",
+          subtitle="California, neighbors, and selected other states") +
+  theme_bw() +
+  legend_notitle +
+  caption_left
+p
+
+```
 
 
 #  Appendix: Notes
