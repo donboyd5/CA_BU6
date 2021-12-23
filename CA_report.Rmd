@@ -843,6 +843,13 @@ for(file in keep){
   download.file(url, path, mode="wb")
 }
 
+# Example: CSU00X3300003O100
+# CSU00X 330000 3 O 1 00
+#        330000 Occupation = Protective Service Occupations
+#        3 Data Type = Injury and illness rate per 10,000 full-time workers
+#        1 Ownership = Private Industry (skip the O -- oh, not zero)
+#        00 Area = All US
+
 # get and save the workplace injuries data
 # Field #/Data Element		Length		Value(Example)
 # 1.  series_id			  17		HCUSH332233
@@ -894,7 +901,7 @@ wpiown <- read_tsv(paste0(wpid, "cs/", "cs.ownership"))
 wpioccs <- read_tsv(paste0(wpid, "cs/", "cs.occupation"), col_types = "ccccc")
 wpistates <- read_tsv(paste0(wpid, "cs/", "cs.state"), col_types = "ccccc")
 
-
+length(unique(wpioccs$occupation_code))==nrow(wpioccs)
 # df <- read_table(paste0(wpid, "cs/", "cs.data.1.AllData"), col_types = "cicnc")  # TOO SLOW!
 
 a <- proc.time()
@@ -905,76 +912,116 @@ saveRDS(df1, paste0(wpid, "wpi_all.rds"))
 
 df1 <- readRDS(paste0(wpid, "wpi_all.rds"))
 
-# count(df1, year) # 2011-2019
+# https://www.bls.gov/help/hlpforma.htm#CS
+# Example: CSU00X3300003O100, from Colin Emberland, BLS
+# CSU00X 330000 3 O 1 00
+#        330000 Occupation = Protective Service Occupations
+#        3 Data Type = Injury and illness rate per 10,000 full-time workers
+#        1 Ownership = Private Industry (skip the O -- oh, not zero)
+#        00 Area = All US
+# CSU00X3330123O100	227.8	345.1	285.3	190.8	345.4	252.4	157.9	145.0	174.8
 
+tmp <- df1 %>% filter(series_id=="CSU00X3330123O700")  # state correctional officers rates
+# good, matches data from Colin Emberland, BLS
+# CSU00X3330123O700	675.6	480.0	446.6	491.2	457.5	450.8	445.9	483.5	495.5
+
+# get rates and cases by occupation
 df2 <- df1 %>%
   filter(str_sub(series_id, 1, 6)=="CSU00X",  # occupational detail
-         str_sub(series_id, 13, 14)=="3O")  # datatype and case code -- 3"O" not zero
+         str_sub(series_id, 13, 13) %in% c("3", "6"), # datatype 3 rate, 6 is cases
+         str_sub(series_id, 14, 14) == "O") # case type -- Oh means by occupation
+         )  
 rm(df1)
 gc(verbose=TRUE)
 
+# simplify
+df3 <- df2 %>%
+  mutate(ocode=str_sub(series_id, 7, 12),  # detail is the occ code in the CS occupational detail file
+         datatype=str_sub(series_id, 13, 13) %>% as.integer,
+         own=str_sub(series_id, 15, 15) %>% as.integer,
+         stfips=str_sub(series_id, 16, 17)) %>%
+  select(series_id, ocode, datatype, own, stfips, year, value, footnote_codes)
+count(df3, footnote_codes) # good, all are NA
+count(df3, datatype)
+count(df3, own)
+
+# factors and joins
+df4 <- df3 %>%
+  mutate(datatype=factor(datatype, levels=c(3, 6), labels=c("rate", "cases")),
+         ownf=factor(own, 
+                      levels=c(0, 1, 7, 8, 9),
+                      labels=c("allown", "private", "state", "local", "slg")),
+         ownf2=factor(own, levels=wpiown$ownership_code, labels=wpiown$ownership_name)) %>%
+  left_join(wpioccs %>% 
+              select(ocode=occupation_code, oname=occupation_text, displevel=display_level),
+            by="ocode") %>%
+  left_join(wpistates %>%
+              select(stfips=state_code, stname=state_name),
+            by="stfips") %>%
+  select(datatype, ocode, oname, displevel, own, ownf, ownf2, stfips, stname, year, value)
+count(df4, stfips, stname)
+count(df4, displevel)
+count(df4, datatype)  # why so many cases records compared to rates records??
+count(df4, year)
+count(df4, own, ownf, ownf2)
+  
+# pivot, and calculate implied ftes 
+df5 <- df4 %>%
+  pivot_wider(names_from = datatype) %>%
+  filter(!is.na(rate)) %>%
+  left_join(stcodes %>% select(stfips, stabbr), by="stfips") %>%
+  mutate(stname=ifelse(stfips=="00", "United States", stname),
+         ftes=cases / rate * 10e3)
+ 
+count(df5, stfips, stabbr, stname) # BLS has different stfips for Guam, Puerto Rico, Virgin Islands
+
+tmp <- df5 %>%
+  filter(displevel==4, stabbr=="US", year==2019, own %in% c(1, 7, 8))
+
+df5 %>%
+  filter(ocode=="333012", own %in% c(1, 7, 8)) %>%
+  ggplot(aes(year, rate, colour=ownf)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks=2000:2020)
+
+wpius <- df5 %>%
+  filter(displevel==4, stabbr=="US", own %in% c(1, 7, 8))
+saveRDS(wpius, here::here("data", "wpius.rds"))
+
+# get 5-year averages
+wpius_5year <- wpius %>%
+  filter(year %in% 2015:2019) %>%
+  group_by(ocode, oname, ownf) %>%
+  summarise(n=n(), 
+            nge5k=sum(ftes >= 5000),
+            cases_sum=sum(cases),
+            ftes_mean=mean(ftes),
+            ftes_sum=sum(ftes),
+            rate_mean=mean(rate),
+            .groups="drop") %>%
+  mutate(rate_calc=cases_sum / ftes_sum * 10e3)
+saveRDS(wpius_5year, here::here("data", "wpius_5year.rds"))
+
+wpius_5year %>%
+  filter(nge5k==5) %>%
+  arrange(desc(rate_calc)) %>% 
+  gt()
+
+wpius_5year %>%
+  filter(ocode=="333012") %>%
+  arrange(desc(rate_calc)) %>% 
+  gt()
+
+# CSU00X3330126O700	...	10940 (2019 value)
 
 # https://github.com/tidyverse/readr/issues/1145
 #..you can install the development versions of cpp11 and then re-install readr.
 # devtools::install_github("r-lib/cpp11")
-# I have NOT installed dev versions of vroom and reader but here is cood to do so
+# I have NOT installed dev versions of vroom and reader but here is code to do so
 # devtools::install_dev("vroom")
 #  or devtools::install_github("r-lib/vroom/vroom")
 # devtools::install_github("tidyverse/readr")
-
-
-# how to parse series_id
-# survey abbreviation		=			cs
-# seasonal adjustment code	=			U
-# category code			=			00X
-# detail code			=			00XXXX
-# datatype code			=			3
-# case code			=			E
-# ownership code			=			1
-# state code			=			00
-df3 <- df2 %>%
-  mutate(detail=str_sub(series_id, 7, 12),
-         own=str_sub(series_id, 15, 15) %>% as.integer,
-         stfips=str_sub(series_id, 16, 17)) %>%
-  select(series_id, detail, own, stfips, year, value, footnote_codes)
-count(df3, detail)  # 1,253
-count(df3, own)  # 0, 1, 7, 8, 9
-count(df3, stfips)  # 47 including US
-count(df3, year) # 2011-2019
-count(df3, footnote_codes) %>% NA for all
-
-# create factors
-df4 <- df3 %>%
-  rename(ocode=detail) %>%
-  left_join(wpiown %>% 
-              select(own=ownership_code, ownf=ownership_name),
-            by="own") %>%
-  left_join(wpioccs %>% 
-              select(ocode=occupation_code, oname=occupation_text, displevel=display_level),
-            by = "ocode") %>%
-  left_join(wpistates %>% select(stfips=state_code, stname=state_name), by="stfips") %>%
-  left_join(stcodes %>% select(stname, stabbr), by="stname") %>%
-  mutate(stfips=as.integer(stfips), 
-         stabbr=case_when(stfips==00 ~ "US",
-                          stfips==66 ~ "GU",
-                          TRUE ~ stabbr))
-summary(df4)
-count(df4, own, ownf)  # no federal government
-count(df4, stfips, stname)  # 47 including all US, DC, GU, PR, VI (42 states)
-count(df4, stfips, stabbr, stname)
-count(df4, displevel)
-
-tmp <- df4 %>%
-  filter(stabbr=="CA", year>=2019)
-  
-
-glimpse(df4)
-wpirates <- df4 %>%
-  select(stabbr, year, own, ownf, ocode, oname, displevel, value)
-summary(wpirates)
-
-saveRDS(wpirates, here::here("data", "wpirates.rds"))
-
 
 ```
 
@@ -994,7 +1041,7 @@ pumas_caxwalk <- readRDS(here::here("data", "pumas_caxwalk.rds")) # puma to msa 
 #.. the main data files ----
 # job categories
 job_cluster <- readRDS(here::here("data", "job_cluster.rds")) # occupation pathways and job clusters
-wpirates <- readRDS(here::here("data", "wpirates.rds")) # workplace injury rates -- DJB review
+wpius_5year <- readRDS(here::here("data", "wpius_5year.rds"))
 
 # OESW
 # All states, govt
@@ -1731,58 +1778,47 @@ I take 3 approaches to within-California comparisons:
 
 
 ```{r wpius_table}
-df <- wpirates %>%
-  filter(stabbr=="US", year==2019)
-df %>% filter(ocode=="333012")
 
-df2 <- df %>%
-  filter(own==0 | (ocode=="333012" & own %in% c(1, 7, 8))) %>% # private, s, l, for corr officers, private other
-  filter(displevel==4)
-
-df2 <- df %>%
-  filter(own %in% c(1, 7, 8)) %>% # private, s, l, for corr officers, private other
-  filter(displevel==4) %>%
-  mutate(ownf2=factor(own, levels=c(1, 7, 8), labels=c("private", "state gov't", "local gov't")),
-         label=paste0(oname, " (", ownf2, ")"),
+tabbase <- wpius_5year %>%
+  filter(nge5k==5) %>% # must have all 5 years with ftes >= 5k
+  arrange(desc(rate_calc)) %>%
+  mutate(rank=row_number(),
+         stateco=ocode=="333012" & ownf=="state",
+         ownf=ifelse(ownf %in% c("state", "local"), paste0(ownf, " gov"), as.character(ownf)),
+         label=paste0(oname, " (", ownf, ")"),
          # Delete non-alphanumeric and selected punctuation
-         label=str_replace_all(label, "[^[:alnum:] (),]", ""),
+         label=str_replace_all(label, "[^[:alnum:] (),-]", ""),
          label=str_replace(label, "sheriffs", "sheriff's"),
-         rank=rank(desc(value))) %>%
-  arrange(rank)
+         pdvsco=rate_calc / rate_calc[stateco] - 1,
+         copdvsother=rate_calc[stateco] / rate_calc - 1)
 
-noccs <- nrow(df2)
+noccs <- nrow(tabbase)
 
-tabdata <- df2 %>%
-  mutate(label=ifelse(ocode=="333012",
-                      paste0(oname, " (", ownf, ")"),
-                      oname),
-         # label=str_replace_all(label, "[^[:alnum:]]", ""),    # Delete non-alphanumeric
-         label=str_replace_all(label, "[^[:alnum:] (),]", ""),    # Delete non-alphanumeric
-         # label=iconv(label, from = '', to = 'ASCII//TRANSLIT'), # convert to ascii
-         rank=rank(desc(value))) %>%
-  filter(rank <= 10 | ocode=="333012") %>%
+topn <- 25
+tabdata <- tabbase %>%
+  filter(rank <= topn | ocode=="333012") %>%
   arrange(rank) %>%
-  select(ocode, label, value, rank)
-
+  select(ocode, label, rate_calc, rank, pdvsco)
 
 tab <- tabdata %>%
   gt() %>%
-  cols_hide(ocode) %>%
+  cols_hide(c(ocode, pdvsco, copdvsother)) %>%
   tab_header(
-    title = "Nonfatal workplace injuries in the United States in 2019",
-    subtitle = paste0("Top 10 occupations, plus correctional officers by sector, out of ",
+    title = "Nonfatal workplace injuries and illnesses in the United States, 2015-2019 average",
+    subtitle = paste0("Top ", topn, 
+                      " occupation-sector combinations, plus correctional officers by sector, out of ",
                       noccs, 
                       " occupation-sector combinations")
       ) %>%
-  tab_spanner(label=html("Injuries and illnesses requiring days away from work<br>Per 10,000 equivalent full-time equivalent workers"),
-              columns=c(value, rank)) %>%
+  tab_spanner(label=html("Injuries and illnesses requiring days away from work"),
+              columns=c(rate_calc, rank)) %>%
   cols_label(label="",
-             value=html("Rate"),
+             rate_calc=html("Rate"),
              rank="Rank"
              ) %>%
   cols_align(align="left", columns = label) %>%
   fmt_number(
-    columns=value,
+    columns=rate_calc,
     pattern = "{x}",
     decimals=1
   ) %>%
@@ -1793,13 +1829,26 @@ tab <- tabdata %>%
   ) %>%
   tab_source_note(paste0("Source: ", source_wpi, ".")) %>%
   cols_width(
-    label ~ px(300),
-    everything() ~ px(200)
+    label ~ px(650),
+    everything() ~ px(140)
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_body(
+      rows=str_detect(label, "Correctional")
+      )
+    ) %>%
+  tab_footnote(
+    footnote = "Per 10,000 full-time equivalent employees, per year.",
+    locations = cells_column_labels(columns = rate_calc)
     )
-
 tab
-gtsave(tab, filename="tab_wpius.png", path=here::here("results"))
-
+ 
+# webshot options
+# default zoom=2, expand=5
+gtsave(tab, filename="tab_wpius.png", path=here::here("results"), zoom=1, expand=10)
 
 ```
 
