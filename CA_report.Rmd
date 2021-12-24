@@ -55,6 +55,7 @@ library(scales)
 library(lubridate)
 library(purrr)
 library(readxl)
+# devtools::install_dev("vroom")
 library(vroom)
 library(haven)
 library(RSQLite)
@@ -835,7 +836,7 @@ saveRDS(cajobeduc, here::here("data", "cajobeduc.rds"))
 
 url_base <- "https://download.bls.gov/pub/time.series/cs/"
 files <- c("cs.age", "cs.case", "cs.category", "cs.contacts", "cs.data.0.Current", "cs.data.1.AllData", "cs.datatype", "cs.event", "cs.footnote", "cs.gender", "cs.hour", "cs.industry", "cs.los", "cs.nature", "cs.occupation", "cs.ownership", "cs.pob", "cs.race", "cs.series", "cs.source", "cs.special", "cs.state", "cs.time", "cs.txt", "cs.weekday")
-keep <- setdiff(files, "cs.data.0.Current")
+keep <- setdiff(files, c("cs.data.0.Current", "cs.series"))
 
 for(file in keep){
   url <- paste0(url_base, file)
@@ -898,19 +899,27 @@ for(file in keep){
 # 9	State and local government combined
 
 wpiown <- read_tsv(paste0(wpid, "cs/", "cs.ownership"))
-wpioccs <- read_tsv(paste0(wpid, "cs/", "cs.occupation"), col_types = "ccccc")
+
+wpioccs1 <- read_tsv(paste0(wpid, "cs/", "cs.occupation"), col_types = "ccccc")
+wpioccs <- wpioccs1 %>%
+  # clean up occupation_text -- delete non-alphanumeric and selected punctuation
+  mutate(oname=str_replace_all(occupation_text, "[^[:alnum:] (),-]", ""),
+         oname=str_replace(oname, "sheriffs", "sheriff's"))
+
 wpistates <- read_tsv(paste0(wpid, "cs/", "cs.state"), col_types = "ccccc")
 
 length(unique(wpioccs$occupation_code))==nrow(wpioccs)
 # df <- read_table(paste0(wpid, "cs/", "cs.data.1.AllData"), col_types = "cicnc")  # TOO SLOW!
 
 a <- proc.time()
-df1 <- vroom(paste0(wpid, "cs/", "cs.data.1.AllData"), col_types = "cicnc")
+wpi_all <- vroom(paste0(wpid, "cs/", "cs.data.1.AllData"), col_types = "cicnc")
 b <- proc.time()
 b - a # 31 secs
-saveRDS(df1, paste0(wpid, "wpi_all.rds"))
+saveRDS(wpi_all, paste0(wpid, "wpi_all.rds"))
 
-df1 <- readRDS(paste0(wpid, "wpi_all.rds"))
+wpi_all <- readRDS(paste0(wpid, "wpi_all.rds"))
+glimpse(wpi_all)
+count(wpi_all, year)
 
 # https://www.bls.gov/help/hlpforma.htm#CS
 # Example: CSU00X3300003O100, from Colin Emberland, BLS
@@ -921,12 +930,12 @@ df1 <- readRDS(paste0(wpid, "wpi_all.rds"))
 #        00 Area = All US
 # CSU00X3330123O100	227.8	345.1	285.3	190.8	345.4	252.4	157.9	145.0	174.8
 
-tmp <- df1 %>% filter(series_id=="CSU00X3330123O700")  # state correctional officers rates
+tmp <- wpi_all %>% filter(series_id=="CSU00X3330123O700")  # state correctional officers rates
 # good, matches data from Colin Emberland, BLS
 # CSU00X3330123O700	675.6	480.0	446.6	491.2	457.5	450.8	445.9	483.5	495.5
 
 # get rates and cases by occupation
-df2 <- df1 %>%
+df2 <- wpi_all %>%
   filter(str_sub(series_id, 1, 6)=="CSU00X",  # occupational detail
          str_sub(series_id, 13, 13) %in% c("3", "6"), # datatype 3 rate, 6 is cases
          str_sub(series_id, 14, 14) == "O") # case type -- Oh means by occupation
@@ -977,6 +986,8 @@ count(df5, stfips, stabbr, stname) # BLS has different stfips for Guam, Puerto R
 
 tmp <- df5 %>%
   filter(displevel==4, stabbr=="US", year==2019, own %in% c(1, 7, 8))
+tmp <- df5 %>% filter(ocode=="292051", ownf=="private")
+t2 <- count(df5, ocode, oname)
 
 df5 %>%
   filter(ocode=="333012", own %in% c(1, 7, 8)) %>%
@@ -989,7 +1000,70 @@ wpius <- df5 %>%
   filter(displevel==4, stabbr=="US", own %in% c(1, 7, 8))
 saveRDS(wpius, here::here("data", "wpius.rds"))
 
-# get 5-year averages
+# https://data.bls.gov/cgi-bin/dsrv
+# Nonfatal cases involving days away from work: selected characteristics (2011 forward)
+# Series Id:	CSUE113300003O000  CSU E11 330000 3 O 0 00
+# Area:	All U.S.
+# Ownership:	All ownerships
+# Data Type:	Injury and illness rate per 10,000 full-time workers
+# Case Type:	Industry division or selected characteristic by detailed occupation
+# Category:	Event - Intentional injury by other person
+# Occupation:	Protective service occupations
+# Year	Annual
+# 2011	35.7
+# 2012	31.9
+# 2013	26.9
+# 2014	22.9
+# 2015	30.9
+# 2016	33.3
+# 2017	26.8
+# 2018	25.9
+# 2019	24.4
+# 2020	22.6
+
+# Series Id:	CSUE113330123O100
+# Area:	All U.S.
+# Ownership:	Private industry; CSUE113330123O700 is state govt
+# Data Type:	Injury and illness rate per 10,000 full-time workers
+# Case Type:	Industry division or selected characteristic by detailed occupation
+# Category:	Event - Intentional injury by other person
+# Occupation:	Correctional officers and jailers
+# 
+# Download: Download as an Excel File
+# Year	Annual
+# 2011	35.5
+# 2012	46.5
+# 2013	44.8
+# 2014	28.4
+# 2015	44.0
+# 2016	56.1
+# 2018	10.9
+# 2019	24.0
+# 2020	84.8
+
+
+# Series Id:	CSUE113330123O700
+# Area:	All U.S.
+# Ownership:	State government
+# Data Type:	Injury and illness rate per 10,000 full-time workers
+# Case Type:	Industry division or selected characteristic by detailed occupation
+# Category:	Event - Intentional injury by other person
+# Occupation:	Correctional officers and jailers
+# 
+# Download: Download as an Excel File
+# Year	Annual
+# 2011	123.2
+# 2012	63.7
+# 2013	49.2
+# 2014	53.6
+# 2015	71.4
+# 2016	81.6
+# 2017	75.3
+# 2018	72.0
+# 2019	71.7
+# 2020	82.8
+
+#.. wpius_5_year averages ----
 wpius_5year <- wpius %>%
   filter(year %in% 2015:2019) %>%
   group_by(ocode, oname, ownf) %>%
@@ -1013,6 +1087,146 @@ wpius_5year %>%
   arrange(desc(rate_calc)) %>% 
   gt()
 
+#.. ihus_5year intentional harm ----
+# CSUE113330123O700  17 characters
+tmp <- wpi_all %>% filter(series_id=="CSUE113330123O700")
+
+# this first step takes a bit; but the resulting df is small enough to work with quickly
+ih1 <- wpi_all %>%
+  filter(str_sub(series_id, 1, 6)=="CSUE11",  # event E11
+         str_sub(series_id, 13, 13) %in% c("3", "6"), # datatype 3 rate, 6 is cases
+         str_sub(series_id, 14, 14) == "O") # case type -- Oh means by occupation
+rm(ih1)
+gc(verbose=TRUE)
+
+# simplify
+ih2 <- ih1 %>%
+  mutate(ocode=str_sub(series_id, 7, 12),  # detail is the occ code in the CS occupational detail file
+         datatype=str_sub(series_id, 13, 13) %>% as.integer,
+         own=str_sub(series_id, 15, 15) %>% as.integer,
+         stfips=str_sub(series_id, 16, 17)) %>%
+  select(series_id, ocode, datatype, own, stfips, year, value, footnote_codes)
+count(ih2, footnote_codes) # 3 footnote Z, Rounded to zero
+count(ih2, datatype)
+count(ih2, own)
+
+# factors and joins
+ih3 <- ih2 %>%
+  mutate(datatype=factor(datatype, levels=c(3, 6), labels=c("rate", "cases")),
+         ownf=factor(own,
+                     levels=c(0, 1, 7, 8, 9),
+                     labels=c("allown", "private", "state", "local", "slg"))) %>%
+  left_join(wpioccs %>% 
+              select(ocode=occupation_code, oname, displevel=display_level),
+            by="ocode") %>%
+  left_join(wpistates %>%
+              select(stfips=state_code, stname=state_name),
+            by="stfips") %>%
+  select(datatype, ocode, oname, displevel, own, ownf, stfips, stname, year, value)
+count(ih3, stfips, stname)
+count(ih3, displevel)
+count(ih3, datatype)  # why so many cases records compared to rates records??
+count(ih3, year)
+count(ih3, own, ownf)
+  
+# pivot, and calculate implied ftes 
+ih4 <- ih3 %>%
+  pivot_wider(names_from = datatype) %>%
+  filter(!is.na(rate)) %>%
+  left_join(stcodes %>% select(stfips, stabbr), by="stfips") %>%
+  mutate(stname=ifelse(stfips=="00", "United States", stname),
+         ftes=cases / rate * 10e3)
+
+ih4 %>%
+  filter(ocode=="333012", own %in% c(1, 7, 8)) %>%
+  ggplot(aes(year, rate, colour=ownf)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks=2000:2020)
+
+# a few codes changed between 2018 and 2019 under an SOC revision -- remap the old codes to new
+remap <- ih4 %>%
+  filter(year %in% 2018:2019, displevel==4) %>% # my period of interest
+  group_by(oname) %>%
+  summarise(n=n(), 
+            code2018=first(ocode[year==2018]),
+            code2019=first(ocode[year==2019]),
+            nocode=length(unique(ocode)), .groups="drop") %>%
+  filter(nocode > 1)
+remap 
+
+# remap codes and then get 5-year averages
+ihus_5year <- ih4 %>%
+  filter(year %in% 2015:2019, stabbr=="US", displevel==4, ownf %in% c("private", "state", "local")) %>%
+  # remap codes
+  left_join(remap %>% select(ocode=code2018, code2019), by = "ocode") %>%
+  mutate(ocode2019=ifelse(is.na(code2019),
+                          ocode, 
+                          code2019)) %>%
+  group_by(ocode2019, oname, ownf) %>%
+  summarise(n=n(), 
+            nge5k=sum(ftes >= 5000),
+            cases_sum=sum(cases),
+            ftes_mean=mean(ftes),
+            ftes_sum=sum(ftes),
+            rate_mean=mean(rate),
+            rate_2019=rate[year==2019],
+            .groups="drop") %>%
+  # calc average and put cow and soc on the file
+  mutate(rate_calc=cases_sum / ftes_sum * 10e3,
+         soc=paste0(str_sub(ocode2019, 1, 2), "-", substr(ocode2019, 3, length(ocode2019))),
+         cow=case_when(ownf=="private" ~ 1,
+                       ownf=="local" ~ 3, # local govt
+                       ownf=="state" ~ 4, # state govt
+                       TRUE ~ -99))
+count(ihus_5year, cow, ownf)
+saveRDS(ihus_5year, here::here("data", "ihus_5year.rds"))
+
+ihus_5year %>%
+  filter(ocode2019=="333012")
+
+ihus_5year %>%
+  filter(ownf %in% c("private", "state", "local")) %>%
+  arrange(desc(rate_calc)) %>%
+  filter(n >= 3)
+
+
+ihus_5year %>%
+  filter(ocode=="333012") %>%
+  arrange(desc(rate_calc))
+
+ih4 %>%
+  filter(ocode=="333012", year >= 2019) %>%
+  arrange(desc(rate))
+
+# online query
+# Year	Annual
+# 2011	123.2
+# 2012	63.7
+# 2013	49.2
+# 2014	53.6
+# 2015	71.4
+# 2016	81.6
+# 2017	75.3
+# 2018	72.0
+# 2019	71.7 good -- matches
+# 2020	82.8
+
+ih4 %>%
+  filter(stabbr=="US", displevel=="4", year == 2019, ownf %in% c("private", "state", "local")) %>%
+  arrange(desc(rate))
+
+tmp <- ih4 %>%
+  filter(stabbr=="US", year == 2019, ownf %in% c("private", "state", "local")) %>%
+  arrange(desc(rate))
+count(tmp, displevel)
+
+# forget state-specific data
+tmp <- ih4 %>%
+  filter(stabbr=="CA", displevel=="2", year == 2019) %>%
+  arrange(desc(rate))
+
+
 # CSU00X3330126O700	...	10940 (2019 value)
 
 # https://github.com/tidyverse/readr/issues/1145
@@ -1022,6 +1236,38 @@ wpius_5year %>%
 # devtools::install_dev("vroom")
 #  or devtools::install_github("r-lib/vroom/vroom")
 # devtools::install_github("tidyverse/readr")
+
+```
+
+
+
+
+## Job clusters
+
+For comparisons to the private sector, one approach is to compare against workers in jobs in a similar cluster. See <https://www.onetonline.org/find/career?c=12> <https://careertech.org/career-clusters>
+
+Here we create a list of occupations that are in the "Law, Public Safety, Corrections & Security" job cluster.
+
+```{r ONETIME_job_clusters}
+# https://www.onetonline.org/find/career?c=12
+# https://www.onetonline.org/find/career/Law_Public_Safety_Corrections_Security.xls?fmt=xls&c=12
+# url <- "https://www.onetonline.org/find/career/Law_Public_Safety_Corrections_Security.xls?fmt=xls&c=12"
+# url_base <- "https://www.onetonline.org/find/career/"
+# fn <- "Law_Public_Safety_Corrections_Security.xls"
+# download.file(url, here::here("data_raw", fn), mode="wb")
+
+urlcsv <- "https://www.onetonline.org/find/career/Law_Public_Safety_Corrections_Security.csv?fmt=csv&c=12"
+fncsv <- "Law_Public_Safety_Corrections_Security.csv"
+download.file(urlcsv, here::here("data_raw", fncsv), mode="wb")
+
+job_cluster1 <- read_csv(here::here("data_raw", fncsv))
+job_cluster <- job_cluster1 %>%
+  setNames(c("pathway", "occd2", "occname")) %>%
+  mutate(occ=str_sub(occd2, 1, -4),
+         cluster="Law, Public Safety, Corrections & Security") %>%
+  select(occd2, occ, occname, pathway, cluster)
+
+saveRDS(job_cluster, here::here("data", "job_cluster.rds"))
 
 ```
 
@@ -1042,6 +1288,7 @@ pumas_caxwalk <- readRDS(here::here("data", "pumas_caxwalk.rds")) # puma to msa 
 # job categories
 job_cluster <- readRDS(here::here("data", "job_cluster.rds")) # occupation pathways and job clusters
 wpius_5year <- readRDS(here::here("data", "wpius_5year.rds"))
+ihus_5year <- readRDS(here::here("data", "ihus_5year.rds"))
 
 # OESW
 # All states, govt
@@ -1776,7 +2023,6 @@ I take 3 approaches to within-California comparisons:
 2.   Compare state government correctional officers to private sector workers in law, public safety, corrections & security occupations
 3.   Compare state government correctional officers to private sector workers in occupations where workers have simlar education attainment
 
-
 ```{r wpius_table}
 
 tabbase <- wpius_5year %>%
@@ -1852,6 +2098,77 @@ gtsave(tab, filename="tab_wpius.png", path=here::here("results"), zoom=1, expand
 
 ```
 
+```{r wpiih_table}
+# workplace injuries -- intentional harm by another person
+
+topn <- 25
+
+tabdata <- ihus_5year %>%
+  filter(ownf %in% c("private", "state", "local")) %>%
+  # filter(ftes_mean >= 3000) %>%
+  arrange(desc(rate_calc)) %>%
+  mutate(rank=row_number(),
+         ownf=ifelse(ownf %in% c("state", "local"),
+                     paste0(ownf, " gov"),
+                     as.character(ownf)),
+         label=paste0(oname, " (", ownf, ")")) %>%
+  filter(rank <= topn |
+           ocode2019=="333012") %>%
+  select(label, rate_calc, rank, ftes_mean)
+
+noccs <- nrow(ihus_5year)
+
+tab <- tabdata %>%
+  gt() %>%
+  cols_hide(c(ftes_mean)) %>%
+  tab_header(
+    title = "Intentional workplace injuries caused by another person: United States 2015-2019 average",
+    subtitle = paste0("Top ", topn, 
+                      " occupation-sector combinations, plus correctional officers by sector, out of ",
+                      noccs, 
+                      " occupation-sector combinations")
+      ) %>%
+  tab_spanner(label=html("Injuries requiring days away from work"),
+              columns=c(rate_calc, rank)) %>%
+  cols_label(label="",
+             rate_calc=html("Rate"),
+             rank="Rank"
+             ) %>%
+  cols_align(align="left", columns = label) %>%
+  fmt_number(
+    columns=rate_calc,
+    pattern = "{x}",
+    decimals=1
+  ) %>%
+  fmt_number(
+    columns=rank,
+    pattern = "{x}",
+    decimals=0
+  ) %>%
+  tab_source_note(paste0("Source: ", source_wpi, ".")) %>%
+  cols_width(
+    label ~ px(650),
+    everything() ~ px(140)
+    ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold") # size = px(15), , font = "arial"
+      ),
+    locations = cells_body(
+      rows=str_detect(label, "Correctional")
+      )
+    ) %>%
+  tab_footnote(
+    footnote = "Per 10,000 full-time equivalent employees, per year.",
+    locations = cells_column_labels(columns = rate_calc)
+    )
+tab
+ 
+# webshot options
+# default zoom=2, expand=5
+gtsave(tab, filename="tab_wpih.png", path=here::here("results"), zoom=1, expand=10)
+
+```
 
 ```{r wpi_us}
 count(wpirates, own, ownf)
@@ -1872,18 +2189,15 @@ count(wpius, cow, own, ownf)
 
 ```
 
-
 ### DJB Within-California comparisons: Federal, state, and local government correctional officers
 
 ```{r mod_cacorr_fslg_acs}
-wpius %>% 
-  filter(soc=="33-3012")
+# wpius %>% 
+#   filter(soc=="33-3012")
   
 #.. ACS subset for CA FSL regression ----
 cacorr_fslacs <- caworkers %>%
   filter(soc=="33-3012", cow %in% 3:5) %>%  # local, state, federal, there are only 11 private obs
-  # no federal wpi rates, ONLY state and local
-  left_join(wpius %>% select(soc, cow, wpirate), by = c("cow", "soc")) %>%  
   mutate(cowf=factor(cow, levels=c(4, 3, 5), labels=c("state", "local", "federal"))) %>%
   arrange(cowf)
 
@@ -1906,18 +2220,15 @@ cacorr_fslacs
 summary(cacorr_fslacs)
 count(cacorr_fslacs, cow, cowf)
 
-cacorr_fslacs %>%
-  group_by(cowf) %>%
-  summarise(n=n(), wpirate=mean(wpirate))
-
 camod_fsl <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + factor(year) | cowf,
                data=cacorr_fslacs, notes = FALSE)
 summary(camod_fsl)
+count(cacorr_fslacs, cowf)
 
-camod_sl_wpi <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp +
-                        wpirate + factor(year) | cowf,
-               data=cacorr_fslacs %>% filter(!is.na(wpirate)), notes = FALSE)
-summary(camod_sl_wpi)
+# camod_sl_wpi <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp +
+#                         wpirate + factor(year) | cowf,
+#                data=cacorr_fslacs %>% filter(!is.na(wpirate)), notes = FALSE)
+# summary(camod_sl_wpi)
 
 ```
 
@@ -1931,21 +2242,57 @@ cfe <- fe$cowf - mean(fe$cowf)
 cfe <- tibble(cowf=names(fe$cowf), fe=fe$cowf) %>%
   mutate(cfe=fe - mean(fe),
          cfepct=exp(cfe) -1,
-         state_vsother=(1 + cfepct[cowf=="state"]) / (1 + cfepct)) %>%
+         state_vsother=(1 + cfepct[cowf=="state"]) / (1 + cfepct) - 1) %>%
   arrange(desc(cfepct))
 cfe
 
-few <- fixef(camod_sl_wpi)
-cfew <- few$cowf - mean(few$cowf)
+
+tab <- cfe %>%
+  filter(cowf %in% c("local", "federal")) %>%
+  select(cowf, state_vsother) %>%
+  mutate(cowf=factor(cowf, 
+                     levels=c("local", "federal"), 
+                     labels=c("Local government", "Federal government"))) %>%
+  gt() %>%
+  tab_header(
+    title = html("California state correctional officer wage premium<br>versus local and federal correctional officers")
+      ) %>%
+  cols_label(cowf="Employer",
+             state_vsother=html("Premium vs. other<br>level of government")
+             ) %>%
+  cols_align(align="left", columns = cowf) %>%
+  fmt_percent(
+    columns=state_vsother,
+    # pattern = "{x}",
+    decimals=1
+  ) %>%
+  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
+  tab_footnote("Adjusted for within-state cost-of-living differences and controlling for education, experience, and demographic characteristics.",
+               locations = cells_column_labels(columns = state_vsother)) %>%
+  cols_width(
+    cowf ~ pct(40),
+    everything() ~ pct(60)
+    ) %>%
+  tab_options(
+    table.width = pct(50)
+  )
+ tab
+# webshot options
+# default zoom=2, expand=5
+gtsave(tab, filename="tab_fslpremium.png", path=here::here("results"), zoom=2, expand=5)
+  
+
+# few <- fixef(camod_sl_wpi)
+# cfew <- few$cowf - mean(few$cowf)
 # summary(few)
 
 # centered fixed effects
-cfew <- tibble(cowf=names(few$cowf), fe=few$cowf) %>%
-  mutate(cfe=fe - mean(fe),
-         cfepct=exp(cfe) -1,
-         state_vsother=(1 + cfepct[cowf=="state"]) / (1 + cfepct)) %>%
-  arrange(desc(cfepct))
-cfew
+# cfew <- tibble(cowf=names(few$cowf), fe=few$cowf) %>%
+#   mutate(cfe=fe - mean(fe),
+#          cfepct=exp(cfe) -1,
+#          state_vsother=(1 + cfepct[cowf=="state"]) / (1 + cfepct)) %>%
+#   arrange(desc(cfepct))
+# cfew
 
 ```
 
@@ -2202,23 +2549,32 @@ The following model regresses wages adjusted for regional cost of living differe
 
 ```{r}
 count(caworkers, cow, cowf)
+
+# define logical expression to use later for filtering
+corr_vs_private <- expression((cow==4 & soc=="33-3012") | # state govt corr officers
+           (cow %in% 1:2 & soc!="33-3012"))  # only private for the non-corr observations
+
 cacluster_df <- caworkers %>%
   filter((cow==4 & soc=="33-3012") | 
-           (cow %in% 1:2 & soc!="33-3012")) %>%
+           (cow %in% 1:5 & soc!="33-3012")) %>%
+  filter(eval(corr_vs_private)) %>%
   left_join(job_cluster %>% 
               select(soc=occ, clust_occname=occname) %>% 
               mutate(incluster=TRUE),
             by="soc") %>%
   filter(incluster)  %>%
-  left_join(wpius %>% select(soc, cow, wpirate), by = c("cow", "soc")) %>%
-  mutate(edattain=fct_drop(edattain),
-         cowf=fct_drop(cowf)) %>%
+  left_join(ihus_5year %>% 
+              select(soc, cow, ihrate=rate_calc), by = c("cow", "soc")) %>%
+  mutate(edattain=fct_drop(edattain), # drop unused factor levels
+         cowf=fct_drop(cowf),
+         ihrate=ifelse(is.na(ihrate), 0, ihrate)) %>%
   group_by(soc, occname) %>%
   mutate(n=n(),
          occgroup=ifelse(n < obs_cutoff, "lowobs", occname)) %>%
   ungroup
 
 summary(cacluster_df)
+count(cacluster_df, soc, occgroup, clust_occname)
 
 count(cacluster_df, cowf)
 count(cacluster_df, soc, occname)
@@ -2227,8 +2583,27 @@ count(cacluster_df, occgroup)
 check <- count(cacluster_df, soc, occgroup, occname)
 sum(check$n)
 
+```
+
+#### Stats on job clusters
+```{r}
+glimpse(cacluster_df)
+summary(cacluster_df)
+count(cacluster_df, occgroup)
+quantile(cacluster_df$ihrate)
+count(cacluster_df, occgroup, ihrate)
+count(cacluster_df, occgroup, occname, ihrate)
+
+cacluster_df %>%
+  group_by(occgroup) %>%
+  summarise(n=n(), wtdn=sum(pwgtp),
+            exp=wtd.mean(exp, weights = pwgtp),
+            ihrate=wtd.mean(ihrate, weights = pwgtp))
+
+count(cacluster_df, occgroup, cowf) %>% pivot_wider(names_from = cowf, values_from = n)
 
 ```
+
 
 
 ##### Model summary
@@ -2239,9 +2614,24 @@ sum(check$n)
 <div style = "width:120%; height:auto; margin: auto;">
 
 ```{r include=TRUE}
-camod_cluster <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) | occgroup,
-               data=cacluster_df)
+
+camod_cluster <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp +
+                         as.factor(year) | occgroup,
+               data=cacluster_df %>% filter(eval(corr_vs_private)))
 summary(camod_cluster)
+
+# the model with intentional harm injury rate is no good because when limited to 
+# state cos vs private sector it is almost all zero for the privates so it is 
+# almost like a fixed effect
+camod_cluster_ih <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp +
+                          ihrate + 
+                          # I(ihrate^2) + # collinear
+                          as.factor(year) | occgroup,
+               data=cacluster_df %>% filter(eval(corr_vs_private)))
+
+summary(camod_cluster)
+summary(camod_cluster_ih)
+
 ```
 </div>
 
@@ -2251,14 +2641,17 @@ summary(camod_cluster)
 Note: I am still investigating this cluster - it may make sense to drop out several very low-paying jobs that probably are not alternatives to correctional officer.
 
 ```{r include=TRUE, fig.width=8, fig.height=8}
-# , fig.width=10, fig.height=8
+
 fecamod_cluster <- fixef(camod_cluster)
 
+# centered fixed effects
 cfe <- tibble(occname=names(fecamod_cluster$occgroup), fe=fecamod_cluster$occgroup) %>%
-  mutate(cfe=fe - mean(fe)) %>% 
-  arrange(desc(cfe))
-
-# keyfacts$caclustercfe <- cfe
+  mutate(cfe=fe - mean(fe),
+         rank=rank(desc(cfe)),
+         cfepct=exp(cfe) -1) %>%
+  arrange(desc(cfepct)) %>%
+  mutate(label=ifelse(row_number() <= 5, percent(cfepct, accuracy=.1), ""))
+cfe
 
 gtitle <- "California state correctional officer wages relative to private sector wages for jobs in the same occupational cluster"
 gsubtitle <- "Adjusted for Metropolitan Statistical Area (MSA) price levels, and controlling for experience, education, and demographic characteristics"
@@ -2266,36 +2659,34 @@ capt1 <- paste0("\nSource: ", source_acs, ".")
 capt2 <- paste0("Price adjustments using ", source_rpp, ".")
 capt3 <- "Note: Occupations with fewer than 50 observations were grouped together."
 capt <- paste0(capt1, "\n", capt2, "\n", capt3)
-occfe_dots <- cfe %>%
-  mutate(grp=str_detect(occname, "Correctional officers"),
+
+jobcluster_bar <- cfe %>%
+    mutate(grp=str_detect(occname, "Correctional officers"),
          occname=ifelse(grp, paste0(occname, " (state government)"), occname),
          occname=ifelse(occname=="lowobs", "Low-observation occupations as a group", occname)) %>%
-  ggplot(aes(y=reorder(str_wrap(occname, 25), cfe), x=cfe * 100)) +  # str_wrap(occname, 30) occname
-  geom_point(aes(colour=grp), size=1.5) +
-  geom_vline(xintercept = 0) +
-  scale_y_discrete(name=NULL) + # , expand = c(.05, .1)
-  scale_x_continuous(name="% above or below cluster average", breaks=seq(-100, 100, 5)) +
+  ggplot(aes(y=reorder(str_wrap(occname, 25), cfepct), x=cfepct)) +
+  geom_col(aes(fill=grp), size=1.5, width=0.1) +
+  geom_point(aes(colour=grp), size=0.75) +
+  geom_text(aes(label=label),
+            hjust=0, nudge_x=.003, size=2.25) +
+  scale_fill_manual(values=c("blue", "red")) +
   scale_colour_manual(values=c("blue", "red")) +
   theme_bw() +
-  labs(caption=capt) +
-  ggtitle(label=str_wrap(gtitle, 100), subtitle = str_wrap(gsubtitle, 100)) +
+  labs(x="% above or below average job in cluster", y=NULL,
+       caption=capt) +
+  ggtitle(label=gtitle, subtitle = gsubtitle) +
   theme(axis.text.y = element_text(hjust = 0)) +
-  theme(aspect.ratio = 4/5) +
+  geom_vline(xintercept = 0) +
+  scale_x_continuous(breaks=seq(-1, 1, .05), labels=label_percent(accuracy=1)) +
   legend_none +
   caption_left
-  # theme(plot.title = element_textbox(hjust = 0.5,
-  #                                width = unit(0.5, "npc"),
-  #                                margin = margin(b = 15))  )
 
-# expand = c(0, 0.3)
-occfe_dots
+jobcluster_bar
 
-ggsave(here::here("results", "occfe_dots.png"), 
-       plot=occfe_dots, width=10, height=8, scale=1.25)
+# use scale adjustment to fit title into png file
+ggsave(here::here("results", "jobcluster_bar.png"), plot=jobcluster_bar, width=10, height=8, scale=1.15)
   
-
 ```
-
 
 
 ##### Alternative model including workplace injuries
@@ -2694,32 +3085,6 @@ calg_fe <- keyfacts$fefsl_df %>% filter(level=="local") %>% .$pdstate
     -   According to the American Community Survey, California state correctional officers have:
         -   Less education than their local government counterparts (r number(casgacs$yoschool, .1) years vs. r number(calgacs$yoschool, .1) years on average), and
         -   More experience than both local government and federal government correctional officers in California (r number(casgacs$exp, .1) years vs. r number(calgacs$exp, .1) and r number(cafgacs$exp, .1) years on average).
-    -   An econometric model of wages based on ACS data suggests that after controlling for education, experience, and demographic characteristics, state correctional officer wages are r percent(calg_fe, .1) above local wages, and r percent(cafg_fe, .1) above federal wages. This might best be considered a lower bound, because the ACS data, before controls, show smaller differences in wages than the OES data.
-
-
-```{r}
-# Comparisons to law etc.
-# keyfacts$caclustercfe
-corrsg_cfe <- keyfacts$caclustercfe %>% filter(str_detect(occname, "Correctional")) %>% .$cfe
-detect_cfe <- keyfacts$caclustercfe %>% filter(str_detect(occname, "Detectives and criminal investigators")) %>% .$cfe
-
-```
-
-        
--   Comparisons with California private-sector workers in the Law, Public Safety, Corrections & Security job cluster
-
-    -   State correctional officer wages, adjusted for intra-California regional price differences, after controlling for eduction, experience, and demographic characteristics, were higher than those of any private sector occupation in the Law, Public Safety, Corrections & Security job cluster.
-    -   They were r percent(corrsg_cfe, .1) above the cluster average. The private sector occupation in the cluster with the highest wages, detectives and criminal investigators, had average wages that were r percent(detect_cfe, .1) above the cluster average.
-
-
-```{r}
-# keyfacts$caeduccfe 
-corred_cfe <- keyfacts$caeduccfe %>% filter(str_detect(occname, "Correctional")) %>% .$cfe
-locoed_cfe <- keyfacts$caeduccfe %>% filter(str_detect(occname, "Locomotive engineers and operators")) %>% .$cfe
-
-
-```
-
 
 -   Comparisons with California private-sector workers in occupations with similar education profiles as state correctional officers
 
@@ -2734,37 +3099,6 @@ locoed_cfe <- keyfacts$caeduccfe %>% filter(str_detect(occname, "Locomotive engi
 
 
 # Appendix: Data preparation
-
-## Job clusters
-
-For comparisons to the private sector, one approach is to compare against workers in jobs in a similar cluster. See <https://www.onetonline.org/find/career?c=12> <https://careertech.org/career-clusters>
-
-Here we create a list of occupations that are in the "Law, Public Safety, Corrections & Security" job cluster.
-
-```{r job_clusters}
-# https://www.onetonline.org/find/career?c=12
-# https://www.onetonline.org/find/career/Law_Public_Safety_Corrections_Security.xls?fmt=xls&c=12
-# url <- "https://www.onetonline.org/find/career/Law_Public_Safety_Corrections_Security.xls?fmt=xls&c=12"
-# url_base <- "https://www.onetonline.org/find/career/"
-# fn <- "Law_Public_Safety_Corrections_Security.xls"
-# download.file(url, here::here("data_raw", fn), mode="wb")
-
-urlcsv <- "https://www.onetonline.org/find/career/Law_Public_Safety_Corrections_Security.csv?fmt=csv&c=12"
-fncsv <- "Law_Public_Safety_Corrections_Security.csv"
-download.file(urlcsv, here::here("data_raw", fncsv), mode="wb")
-
-job_cluster1 <- read_csv(here::here("data_raw", fncsv))
-job_cluster <- job_cluster1 %>%
-  setNames(c("pathway", "occd2", "occname")) %>%
-  mutate(occ=str_sub(occd2, 1, -4),
-         cluster="Law, Public Safety, Corrections & Security") %>%
-  select(occd2, occ, occname, pathway, cluster)
-
-saveRDS(job_cluster, here::here("data", "job_cluster.rds"))
-
-```
-
-
 
 
 ## Benefits
