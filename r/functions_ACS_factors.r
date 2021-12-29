@@ -144,6 +144,8 @@ f_create_vars <- function(df){
            rwagp=wagp * adjinc,
            yoschool=f_yoschool(schl, agep),
            ltassoc=schl < 20,
+           ltba=schl < 21,
+           ltma=schl < 22,
            agep2=agep^2,
            exp=agep - yoschool - 6,
            exp2=exp^2,

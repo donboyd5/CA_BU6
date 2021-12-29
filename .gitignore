@@ -12,4 +12,18 @@ results/
 *.png
 *.rdata
 *.rds
+*.xlsx
 *.zip
+
+
+# to stop tracking tracked files that have been added to gitignore:
+
+# First:
+# git rm -r --cached .
+# git add .
+
+# Then:
+# git commit -am "Remove ignored files"
+
+# Or as a one-liner:
+# git rm -r --cached . && git add . && git commit -am "Remove ignored files"
