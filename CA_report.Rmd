@@ -3221,6 +3221,47 @@ results %>%
 ```
 
 
+## check results for individual workers or groups --------------------------
+```{r}
+# check results for individual workers or groups --------------------------
+check <- retinc_pv %>%
+  filter(worker==1, stabbr=="CA", tier=="major", tname=="poffa") %>%
+  unnest(cols=params)
+# why does net pv at age 50 fall for those who retire later? I get it for the DB plans
+# but why the dc plans?
+  
+check <- retinc %>%
+  # filter(worker==1, stabbr=="CA", tier=="major", tname=="poffa") %>%
+  filter(stabbr=="TX", worker==1, tier=="newhire") %>%
+  unnest(cols = c(params, wdata, base, pension))
+
+wb <- createWorkbook()
+xlrows <- 2:(nrow(check) + 1)
+sname <- "sheet1"
+addWorksheet(wb, sname)
+writeData(wb, sheet=sname, x=check)
+
+num0 <- createStyle(numFmt = "#,##0")
+num1 <- createStyle(numFmt = "#,##0.0")
+curr2 <- createStyle(numFmt = "$0.00")
+pct1 <- createStyle(numFmt = "0.0%")
+pct2 <- createStyle(numFmt = "0.00%")
+
+comma_cols <- c("fas", "wage", "db_eec_base1", "db_eec", "db_pension2", "db_pension_colagrown", "db_pension_base", "db_pension")
+icomma_cols <- match(comma_cols, names(check))
+pct_cols <- c("db_benfactor_min", "db_benfactor_normal", "db_max_benpct", "db_cola_rate", "db_eec_rate1", "db_eec_rate2", "db_benfactor", "db_pctfas_uncapped", "db_pctfas")
+ipct_cols <- match(pct_cols, names(check))
+
+addStyle(wb, sheet = sname, style = num0, rows=xlrows, cols = icomma_cols, gridExpand = TRUE)
+addStyle(wb, sheet = sname, style = pct2, rows=xlrows, cols = ipct_cols, gridExpand = TRUE)
+saveWorkbook(wb, file = here::here("checks", "check.xlsx"), overwrite = TRUE)
+
+check %>%
+  write.xlsx(here::here("checks", "check.xlsx"))
+
+```
+
+
 
 # Employee health benefits
 

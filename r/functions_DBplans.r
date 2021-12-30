@@ -52,7 +52,7 @@ pension <- function(db_covered, stabbr, tier, w, b, p){
                          0)) %>%
     # now determine retirement benefits
     mutate(early_years=pmax(p$db_aor_normal - w$aor, 0),
-           early_penalty=early_years * early_penalty_per_year,
+           early_penalty=pmin(early_years * early_penalty_per_year, p$db_benfactor_normal),
            db_benfactor=p$db_benfactor_normal - early_penalty,
            db_pctfas_uncapped=db_benfactor * w$fyos,
            db_pctfas=pmin(db_pctfas_uncapped, p$db_max_benpct),
