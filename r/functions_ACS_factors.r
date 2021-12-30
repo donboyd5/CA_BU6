@@ -133,8 +133,6 @@ f_edattain <- function(schl){
 }
 # f_edattain(11)
 
-
-
 f_create_vars <- function(df){
   # create multiple new variables for df
   # df has acs variables
@@ -146,10 +144,12 @@ f_create_vars <- function(df){
            ltassoc=schl < 20,
            ltba=schl < 21,
            ltma=schl < 22,
+           bornus=cit==1,
            agep2=agep^2,
            exp=agep - yoschool - 6,
            exp2=exp^2,
            lrwagp=log(rwagp),
+           powpumaf=paste0(st, powpuma),
            sex=factor(sex, levels=1:2, labels=c("male", "female")),
            rachisp=f_race_hisp(rac1p, hisp),
            edattain=f_edattain(schl),

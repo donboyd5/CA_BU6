@@ -51,6 +51,8 @@ knitr::opts_chunk$set(echo = FALSE, include=FALSE, eval=TRUE, message = FALSE, w
 
 library(tidyverse)
 options(tibble.print_max = 80, tibble.print_min = 80) # if more than 60 rows, print 60 - enough for states
+library(Formula)
+
 library(scales)
 library(lubridate)
 library(purrr)
@@ -152,13 +154,12 @@ compstates <- c("AZ", "NV", "OR", "WA", # near neighbors
 obs_cutoff <- 50
 
 #.. ACS constants ----
-acsvars_string <- "serialno, st, puma, powsp, powpuma, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, hisp, rac1p, occp, naicsp"
+acsvars_string <- "serialno, st, puma, powsp, powpuma, adjinc, pwgtp, agep, cow, mar, schl, sex, wagp, wkhp, wkw, wkwn, cit, hisp, rac1p, occp, naicsp"
 
 # define the filter definition for a worker so we  have it in only one place
 # worker <- expression(wagp >= 10e3, agep >= 18)  # haven't gotten this to work
 # sworker <- "schl > 15 & wagp >= 10e3 & agep >= 18"  # as a string - works with filter(eval(parse(text=sworker))), albeit awkward
-sworker <- "wagp >= 10e3 & agep >= 18"  # as a string - works with
-
+sworker <- "wagp >= 10e3 & agep >= 18 & wkw <= 2 & wkhp >= 35"  # as a string - works with
 
 #.. graph theme items ----
 legend_none <- theme(legend.position = "None")
@@ -870,6 +871,37 @@ corr_workers <- corr_base %>%
   mutate(n=n()) %>%
   ungroup
 
+# WKW Character 1 Weeks worked during past 12 months
+# b .N/A (less than 16 years old/did not work during the past 12 .months)
+# 1 .50 to 52 weeks worked during past 12 months
+# 2 .48 to 49 weeks worked during past 12 months
+# 3 .40 to 47 weeks worked during past 12 months
+# 4 .27 to 39 weeks worked during past 12 month
+# 5 .14 to 26 weeks worked during past 12 months
+# 6 .13 weeks or less worked during past 12 months
+
+# WKWN Numeric 2 Weeks worked during past 12 months (2019 or later)
+# bb .N/A (less than 16 years old/did not work during the past .12 months or case is from before 2019)
+# 1..52 .1 to 52 weeks worked during past 12 months (2019 or later
+
+# eventually maybe keep workers with 35-70 usual hours per week, or something like that?
+quantile(corr_workers$wkhp, probs = c(0, .01, .05, .1, .25, .5, .75, .9, .95, .99, 1))
+quantile(corr_workers$wkw, probs = c(0, .01, .05, .1, .25, .5, .75, .9, .95, .99, 1))
+quantile(corr_workers$wkwn, probs = c(0, .01, .05, .1, .25, .5, .75, .9, .95, .99, 1), na.rm=TRUE)
+count(corr_workers, year, wkw) %>% pivot_wider(names_from = year, values_from = n)
+count(corr_workers, year, wkwn) %>% pivot_wider(names_from = year, values_from = n) # only avail for 2019
+# keep wkw <= 2
+# keep wkhp >= 35
+# add wkhp and bornus to regressions
+count(corr_workers, cit)
+
+corr_workers %>%
+  group_by(stabbr) %>%
+  summarise(n=n(), wtdn=sum(pwgtp), 
+            wkhp_wmean=wtd.mean(wkhp, weights = pwgtp), 
+            wkhp_median=median(wkhp), .groups="drop") %>%
+  arrange(desc(wkhp_wmean))
+
 summary(corr_workers)
 count(corr_workers, stabbr)
 corr_workers %>%
@@ -1049,7 +1081,7 @@ count(gcc1 %>% filter(str_detect(Position, "Correctional Officer")), Position)
 casco_gcc1 <- gcc1 %>%
   filter(str_detect(Position, "Correctional Officer"),
          !str_detect(Position, "Youth")) %>%
-  select(Year, emptype=EmployerType, empname=EmployerName, dept=DepartmentOrSubdivision,
+  select(Year, emptype=EmployerType, empname=EmployerName, dept=DepartmentOrSubdivision, Position,
          minsalary=MinPositionSalary, maxsalary=MaxPositionSalary,
          regpay=RegularPay, otpay=OvertimePay, lumppay=LumpSumPay, OtherPay, totwage=TotalWages,
          dberc=DefinedBenefitPlanContribution, dbercbehalf=EmployeesRetirementCostCovered,
@@ -1862,7 +1894,7 @@ gtsave(tab, filename="tab_rppwage_states.png", path=here::here("results"), expan
 
 The similarity between the ACS plot here and the OES plot above give us confidence when using the ACS to control for differences across individuals.
 
-```{r include=TRUE, fig.width=6, fig.height=8}
+```{r wages_acs_dots, include=TRUE, fig.width=6, fig.height=8}
 
 gtitle <- "State correctional officer salaries"
 gsubtitle <- "Based on a 5-year sample adjusted to 2020 income levels"
@@ -1961,7 +1993,6 @@ p <- corr_summary %>%
   labs(caption=capt) +
   caption_left
 p
-
 
 ```
 
@@ -2104,6 +2135,11 @@ casco_vros <- function(cfe){
            cfepct=exp(cfe) -1) %>%
     filter(casco) 
 }
+
+frmbase <- Formula(lrppwagp ~ exp + exp2 + edattain + wkhp +
+                        marstat + sex +
+                        bornus + rachisp + as.factor(year))
+
 ```
 
 
@@ -2117,9 +2153,12 @@ corr_workers_states <- corr_workers %>%
 
 ### Fixed effects model
 ```{r mod_statecos}
-modfe_states <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) | stabbr2,
+# summary(corr_workers_states) # don't worry about powpuma
+# update syntax: first . is the first (and only) part of the lhs, 
+#  second . is the rhs, which we update by adding | and the fe
+modfe_states <- feols(update(frmbase, . ~ . | stabbr2),
                data=corr_workers_states)
-
+summary(modfe_states)
 fe_states <- fixef(modfe_states)
 
 # centered fixed effects
@@ -2137,7 +2176,7 @@ cfe_states <- tibble(stabbr=names(fe_states$stabbr2), fe=fe_states$stabbr2) %>%
 cfe_states
 
 # compare CA to other states rather than to U.S.
-states_vros <- casco_vros(cfe_states) # the same, within rounding
+(states_vros <- casco_vros(cfe_states)) # the same, within rounding
 
 ```
 
@@ -2149,7 +2188,7 @@ gsubtitle <- paste0(gsub1, "\n", gsub2)
 capt1 <- paste0("\nSource: ", source_acs, "; and ", source_rpp, ".")
 capt2 <- "Note: States with fewer than 50 observations were grouped together."
 capt <- paste0(str_wrap(capt1, 100), "\n", capt2)
-statefe_dots <- cfe_states  %>%
+statefe_bar <- cfe_states  %>%
   mutate(label=ifelse(row_number() <= 5, percent(cfepct, accuracy=.1), "")) %>%
   mutate(grp=ifelse(stabbr=="CA", "CA", "other")) %>%
   ggplot(aes(y=reorder(stname, cfepct), x=cfepct)) +
@@ -2169,24 +2208,23 @@ statefe_dots <- cfe_states  %>%
   legend_none +
   caption_left
 
-statefe_dots
+statefe_bar
 
-ggsave(here::here("results", "statefe_bar.png"), plot=statefe_dots, width=10, height=8, scale=1.0)
+ggsave(here::here("results", "statefe_bar.png"), plot=statefe_bar, width=10, height=8, scale=1.0)
 
 ```
-
 
 
 ### Dummy variable model
 ```{r}
 # dummy variable approach
-moddum_states <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) + casco,
+# update(frmbase, . ~ . | stabbr2)
+moddum_states <- feols(update(frmbase, . ~ . + casco),
                data=corr_workers_states)
 # summary(moddum_states) 
 (casco_states <- casco_pct(moddum_states))
 
 ```
-
 
 ## Within CA FSL COs
 
@@ -2194,11 +2232,11 @@ moddum_states <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachis
 ```{r mod_fslcorr}
 caworkers_corr <- caworkers %>%
   filter(soc=="33-3012", level != "private")  # drop the 11 private
+count(caworkers_corr, level)
 
 count(caworkers_corr, level)
 
-mod_cacorrfsl <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp +
-                         as.factor(year) | level,
+mod_cacorrfsl <- feols(update(frmbase, . ~ . | level),
                data=caworkers_corr)
 summary(mod_cacorrfsl)
 
@@ -2221,10 +2259,54 @@ cacorrfsl_vros
 
 ```
 
+
+Get state-centric fixed effects
+```{r tab_fsl_fe}
+
+tab <- cfe_cacorrfsl %>%
+  filter(level %in% c("local", "federal")) %>%
+  select(level, casco_vsother) %>%
+  mutate(level=factor(level, 
+                     levels=c("local", "federal"), 
+                     labels=c("Local government", "Federal government"))) %>%
+  gt() %>%
+  tab_header(
+    title = html("California state correctional officer wage premium<br>versus local and federal correctional officers")
+      ) %>%
+  cols_label(level="Employer",
+             casco_vsother=html("Premium vs. other<br>level of government")
+             ) %>%
+  cols_align(align="left", columns = level) %>%
+  fmt_percent(
+    columns=casco_vsother,
+    # pattern = "{x}",
+    decimals=1
+  ) %>%
+  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
+  tab_footnote(
+    "Adjusted for within-state cost-of-living differences and controlling for education, experience, and demographic characteristics.",
+    locations = cells_column_labels(columns = casco_vsother)
+    ) %>%
+  cols_width(
+    level ~ pct(40),
+    everything() ~ pct(60)
+    ) %>%
+  tab_options(
+    table.width = pct(50)
+  )
+
+tab
+# webshot options
+# default zoom=2, expand=5
+gtsave(tab, filename="tab_fslpremium.png", path=here::here("results"), zoom=2, expand=5)
+  
+```
+
+
 ### Dummy variable model
 ```{r}
-moddum_cacorrfsl <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp +
-                            as.factor(year) + casco,
+
+moddum_cacorrfsl <- feols(update(frmbase, . ~ . + casco),
                data=caworkers_corr)
 summary(moddum_cacorrfsl)
 
@@ -2352,7 +2434,7 @@ count(caworkers_law, level) %>%
 
 ### Fixed effects model
 ```{r mod_jobclust}
-mod_calawjobs <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + as.factor(year) | occgroup,
+mod_calawjobs <- feols(update(frmbase, . ~ . | occgroup),
                data=caworkers_law)
 summary(mod_calawjobs)
 
@@ -2378,7 +2460,7 @@ calawjobs_vros
 
 
 ```{r plot_jobclust}
-gtitle <- "California state correctional officer wages relative to wages for jobs in the same occupational cluster"
+gtitle <- "California state correctional officer wages relative to jobs in the Law, Public Safety, Corrections & Security occupation cluster"
 gsub1 <- "Controlling for experience, education, and demographic characteristics"
 gsub2 <- "Wages adjusted for within-California differences in cost of living"
 gsubtitle <- paste0(gsub1, ". ", gsub2, ".")
@@ -2424,8 +2506,7 @@ ggsave(here::here("results", "jobclustfe_bar.png"), plot=jobclustfe_dots, width=
 
 ### Dummy variable model
 ```{r}
-moddum_calawjobs <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + 
-                            as.factor(year) + yoschool_wmean + casco,
+moddum_calawjobs <- feols(update(frmbase, . ~ . + casco),
                data=caworkers_law)
 summary(moddum_calawjobs)
 
@@ -2463,16 +2544,16 @@ occ_stats %>%
   scale() %>%
   fviz_nbclust(kmeans, method = "silhouette") +
     #geom_vline(xintercept = 4, linetype = 2) +
-  labs(subtitle = "silhouette method")  # 4 looks good
+  labs(subtitle = "silhouette method")  # 2 or 4 looks good
 
 # set.seed(123)
 # occ_stats %>%
 #   select(-c(soc, occname, n, contains("rwagp"))) %>% # we don't want wages in this
 #   scale() %>%
 #   fviz_nbclust(kmeans, method = "gap_stat", nboot = 50) +
-#   labs(subtitle = "Gap statistic method") # 10 looks good
+#   labs(subtitle = "Gap statistic method") # 9 looks good
 
-nclust <- 10
+nclust <- 9
 kclust_base <- occ_stats %>%
   select(-c(soc, occname, n, contains("rwagp"))) # we don't want wages in this
 ns(kclust_base)
@@ -2487,7 +2568,7 @@ occ_clusters <- occ_stats %>%
   group_by(cluster) %>%
   mutate(cascogrp=soc=="33-3012",
          cascogrp=max(cascogrp) %>% as.logical)
-summary(occ_clusters)
+# summary(occ_clusters)
 
 casco_group <- occ_clusters %>%
   filter(cascogrp, n>=50) %>%
@@ -2509,11 +2590,16 @@ caworkers_cluster <- caworkers %>%
          occgroup=ifelse(n < obs_cutoff, "lowobs", occname_lev)) %>%
   ungroup
 
-summary(caworkers_cluster)
+# summary(caworkers_cluster)
 caworkers_cluster %>%
   mutate(married=mar==1, male=sex=="male") %>%
   group_by(casco) %>%
-  summarise(across(c(rwagp, married, male, ltassoc, ltba, ltma, agep), ~ wtd.mean(.x, weights=pwgtp)))
+  summarise(n=n(), 
+            across(c(rwagp, married, male, ltassoc, ltba, ltma, agep), 
+                   ~ wtd.mean(.x, weights=pwgtp)),
+            .groups="drop") %>%
+  mutate(nclust=!!nclust)
+
 
 caworkers_cluster %>%
   group_by(occname_lev) %>%
@@ -2521,73 +2607,10 @@ caworkers_cluster %>%
 
 ```
 
-```{r cluster_table}
-tabdata <- caworkers_cluster %>%
-  mutate(married=mar==1, male=sex=="male") %>%
-  group_by(casco) %>%
-  summarise(n=n(), across(c(rwagp, married, male, ltassoc, ltba, ltma, agep), ~ wtd.mean(.x, weights=pwgtp)),
-            .groups="drop") %>%
-  mutate(casco=ifelse(casco, "casco", "other")) %>%
-  select(-c(ltba, ltma)) %>%
-  pivot_longer(cols=-casco) %>%
-  pivot_wider(names_from = casco) %>%
-  mutate(name=factor(name, 
-                     levels=c("n", "agep", "male", "married", "ltassoc", "rwagp"),
-                     labels=c("# of observations", "Average age", "% male", "% married",
-                              "% with less than an associate's degree", "Average wage"))) %>%
-  arrange(name) %>%
-  select(name, casco, other)
-  
-tabdata
-
-tab <- tabdata %>%
-  gt() %>%
-  tab_header(
-    title = "California state correctional officer wages compared to other workers in the same job cluster") %>%
-  cols_label(name="Characteristic",
-             casco="State correctional officers",
-             other="Private sector workers in the cluster") %>%
-  cols_align(align="left", columns = name) %>%
-  fmt_number(
-    columns=c(casco, other),
-    rows=str_detect(name, "#"),
-    decimals=0,
-    pattern="{x}"
-    ) %>%
-  fmt_number(
-    columns=c(casco, other),
-    rows=str_detect(name, "age"),
-    decimals=1,
-    pattern="{x}"
-    ) %>%
-  fmt_percent(
-    columns=c(casco, other),
-    rows=str_detect(name, "%"),
-    decimals=1
-  ) %>%
-  fmt_number(
-    columns=c(casco, other),
-    rows=str_detect(name, "wage"),
-    decimals=0,
-    pattern="${x}"
-    ) %>%
-  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
-  tab_options(
-    table.width = pct(50)
-  )
-
-# webshot options
-# default zoom=2, expand=5
-gtsave(tab, filename="tab_cluster_comparison.png", path=here::here("results"), zoom=2, expand=5)
-write_csv(tabdata, here::here("results", "tab_cluster_comparison_data.csv"))
-
-```
-
 
 ### Fixed effects model
 ```{r mod_cluster}
-mod_cacluster <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp +
-                             as.factor(year) | occgroup,
+mod_cacluster <- feols(update(frmbase, . ~ . | occgroup),
                data=caworkers_cluster)
 summary(mod_cacluster)
 fe_cacluster <- fixef(mod_cacluster)
@@ -2652,7 +2675,7 @@ gtsave(tab, filename="tab_cluster_regtop10.png", path=here::here("results"), zoo
 write_csv(tabdata, here::here("results", "tab_cluster_regtop10_data.csv"))
 ```
 
-```{r plot_cluster}
+```{r plot_cluster_bar}
 gtitle <- "California state correctional officer wages relative to wages for jobs in the same occupational cluster"
 gsub1 <- "Controlling for experience, education, and demographic characteristics"
 gsub2 <- "Wages adjusted for within-California differences in cost of living"
@@ -2663,7 +2686,7 @@ capt2 <- paste0("Price adjustments using ", source_rpp, ".")
 capt3 <- "Note: Occupations with fewer than 50 observations were grouped together."
 capt <- paste0(capt1, "\n", capt2, "\n", capt3)
 
-caclusterfe_dots <- cfe_cacluster  %>%
+caclusterfe_bar <- cfe_cacluster  %>%
   mutate(label=ifelse(row_number() <= 5, percent(cfepct, accuracy=.1), "")) %>%
   mutate(grp=ifelse(casco, "CA", "other")) %>%
   mutate(occgroup=ifelse(occgroup=="lowobs", "Low-observation occupations as a group", occgroup)) %>%
@@ -2685,21 +2708,85 @@ caclusterfe_dots <- cfe_cacluster  %>%
   legend_none +
   caption_left
 
-caclusterfe_dots
+caclusterfe_bar
 
-ggsave(here::here("results", "caclusterfe_bar.png"), plot=caclusterfe_dots, width=10, height=12, scale=1.3)
+ggsave(here::here("results", "caclusterfe_bar.png"), plot=caclusterfe_bar, width=10, height=12, scale=1.3)
 
 ```
 
 ### Dummy variable model
 ```{r}
-moddum_cacluster <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp +
-                             as.factor(year) + casco,
+moddum_cacluster <- feols(update(frmbase, . ~ . + casco),
                data=caworkers_cluster)
 summary(moddum_cacluster)
 (casco_cacluster <- casco_pct(moddum_cacluster))
 
 ```
+
+### Descriptive stats table
+
+```{r cluster_table}
+tabdata <- caworkers_cluster %>%
+  mutate(married=mar==1, male=sex=="male") %>%
+  group_by(casco) %>%
+  summarise(n=n(), across(c(rwagp, married, male, ltassoc, ltba, ltma, agep), ~ wtd.mean(.x, weights=pwgtp)),
+            .groups="drop") %>%
+  mutate(casco=ifelse(casco, "casco", "other")) %>%
+  select(-c(ltba, ltma)) %>%
+  pivot_longer(cols=-casco) %>%
+  pivot_wider(names_from = casco) %>%
+  mutate(name=factor(name, 
+                     levels=c("n", "agep", "male", "married", "ltassoc", "rwagp"),
+                     labels=c("# of observations", "Average age", "% male", "% married",
+                              "% with less than an associate's degree", "Average wage"))) %>%
+  arrange(name) %>%
+  select(name, casco, other)
+  
+tabdata
+
+tab <- tabdata %>%
+  gt() %>%
+  tab_header(
+    title = "California state correctional officer wages compared to other workers in the same job cluster") %>%
+  cols_label(name="Characteristic",
+             casco="State correctional officers",
+             other="Private sector workers in the cluster") %>%
+  cols_align(align="left", columns = name) %>%
+  fmt_number(
+    columns=c(casco, other),
+    rows=str_detect(name, "#"),
+    decimals=0,
+    pattern="{x}"
+    ) %>%
+  fmt_number(
+    columns=c(casco, other),
+    rows=str_detect(name, "age"),
+    decimals=1,
+    pattern="{x}"
+    ) %>%
+  fmt_percent(
+    columns=c(casco, other),
+    rows=str_detect(name, "%"),
+    decimals=1
+  ) %>%
+  fmt_number(
+    columns=c(casco, other),
+    rows=str_detect(name, "wage"),
+    decimals=0,
+    pattern="${x}"
+    ) %>%
+  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
+  tab_options(
+    table.width = pct(50)
+  )
+
+# webshot options
+# default zoom=2, expand=5
+gtsave(tab, filename="tab_cluster_comparison.png", path=here::here("results"), zoom=2, expand=5)
+write_csv(tabdata, here::here("results", "tab_cluster_comparison_data.csv"))
+
+```
+
 
 
 # Summary table of casco premium (California state correctional officers)
@@ -2942,6 +3029,25 @@ retinc
 
 ```{r}
 # gcc benefits ----
+# REMEMBER - these are full time and part time so averages are understated
+casco_gcc %>%
+  group_by(position) %>%
+  summarise(qtiledf(.data$health))
+
+casco_gcc %>%
+  group_by(position) %>%
+  summarise(n=n(), 
+            minsalary=first(minsalary), 
+            maxsalary=first(maxsalary),
+            qtiledf(.data$regpay))
+
+casco_gcc %>%
+  summarise(qtiledf(.data$health),
+            health_mean=mean(health),
+            health=sum(health),
+            regpay=sum(regpay))
+
+
 
 coeh2 <- coeh %>%
   mutate(hlthpct=healthdentalvision / totalwages)
