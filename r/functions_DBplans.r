@@ -1,7 +1,9 @@
 
 pension <- function(db_covered, stabbr, tier, w, b, p){
   # w: worker data
-  # b: base
+  # b: base data, which is a function of w; it has:
+       # one record for each year from aoe (age of entry) to aod (age of death), with
+       # year, age, yos, yor, wage
   # p: params
   # TODO:
   if(!db_covered) return(NULL)
@@ -21,8 +23,8 @@ pension <- function(db_covered, stabbr, tier, w, b, p){
   # }
   
   eec <- function(stabbr, tier, wage, p) {
-    p$db_eec_rate1 * pmin(wage, p$db_eec_base1) +
-      p$db_eec_rate2 * pmax(wage - p$db_eec_base1, 0)
+    p$db_eec_rate1 * pmin(wage, p$db_eec_ceiling1) +
+      p$db_eec_rate2 * pmax(wage - p$db_eec_ceiling1, 0)
   }
   
   cola <- function(stabbr, tier, p) {

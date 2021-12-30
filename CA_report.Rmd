@@ -993,6 +993,83 @@ saveRDS(cajobeduc, here::here("data", "cajobeduc.rds"))
 
 ```
 
+## Goverment Compensation in California, State Controller's Office
+```{r ONETIME_gcc}
+# https://publicpay.ca.gov/Reports/RawExport.aspx
+# https://publicpay.ca.gov/Reports/DataDictionary.aspx
+# https://publicpay.ca.gov/RawExport/2020_StateDepartment.zip
+
+# Regular Pay
+# The dollar amount paid to an employee for their normal hours worked, including any leave time used and/or paid holidays.
+
+# Overtime Pay
+# The dollar amount paid to the employee for hours worked in addition to normal hours.
+
+# Lump-Sum Pay
+# The dollar amount paid to the employee for one-time cash-outs (including, but not limited to, paid excess vacation and sick leave, and legal settlements).
+
+# Other Pay
+# The dollar amount paid to the employee for any other pay not reported as regular pay, overtime pay, or lump-sum pay (such as car allowances, meeting stipends, incentive pay, bonus pay, etc.). Elected Officials' pay reported on IRS Form 1099 also is included as Other Pay. For the University of California, the largest categories of Other Pay are health sciences faculty non-base compensation derived from clinical revenue and contracts and grants, as well as additional compensation to faculty for summer session teaching and externally-funded research conducted during the summer.
+
+# Health/Dental/Vision Contribution
+# The dollar amount paid by the employer toward the employee's health, dental, and/or vision care plans.
+
+urlbase <- "https://publicpay.ca.gov/RawExport/"
+fnz <- "2020_StateDepartment.zip"
+fnc <- "2020_StateDepartment.csv"
+download.file(url=paste0(urlbase, fnz), here::here("data_raw", fnz), mode="wb")
+
+gcc1 <- read_csv(unz(here::here("data_raw", fnz), fnc))
+glimpse(gcc1)
+
+# https://publicpay.ca.gov/Reports/State/StateEntity.aspx?entityid=3761&year=2020
+# employees: 66,623
+# Total Wages $5,887,870,119
+# Total Retirement & Health Contribution $2,705,069,656
+
+gcc1 %>%
+  filter(EmployerName=="Corrections & Rehabilitation, Department of") %>%
+  summarise(n=n(), across(c(TotalWages, TotalRetirementAndHealthContribution), sum))
+# good, matches what they show on their website
+
+count(gcc1 %>% filter(str_detect(Position, "Correctional Officer")), Position)
+#   Position                                n
+#   <chr>                               <int>
+# 1 Correctional Officer, Range 1         256
+# 2 Correctional Officer, Range A           8
+# 3 Correctional Officer, Range B          16
+# 4 Correctional Officer, Range C           9
+# 5 Correctional Officer, Range J        2916
+# 6 Correctional Officer, Range K       21154
+# 7 Youth Correctional Officer, Range A     3
+# 8 Youth Correctional Officer, Range J    68
+# 9 Youth Correctional Officer, Range K   174
+
+# get casco
+casco_gcc1 <- gcc1 %>%
+  filter(str_detect(Position, "Correctional Officer"),
+         !str_detect(Position, "Youth")) %>%
+  select(Year, emptype=EmployerType, empname=EmployerName, dept=DepartmentOrSubdivision,
+         minsalary=MinPositionSalary, maxsalary=MaxPositionSalary,
+         regpay=RegularPay, otpay=OvertimePay, lumppay=LumpSumPay, OtherPay, totwage=TotalWages,
+         dberc=DefinedBenefitPlanContribution, dbercbehalf=EmployeesRetirementCostCovered,
+         dcerc=DeferredCompensationPlan, health=HealthDentalVision,
+         totrethealth=TotalRetirementAndHealthContribution) %>%
+  setNames(str_to_lower(names(.)))
+glimpse(casco_gcc1)
+count(casco_gcc1, empname)
+casco_gcc <- casco_gcc1 %>%
+  select(-emptype)
+summary(casco_gcc) # why is dcerc $0?? I thought there is 2% contribution???
+
+saveRDS(casco_gcc, here::here("data", "casco_gcc.rds"))
+
+casco_gcc <- readRDS(here::here("data", "casco_gcc.rds"))  # check
+
+```
+
+
+
 ## Workplace injury rates
 
 ```{r eval=FALSE}
@@ -1469,6 +1546,9 @@ load(file=here::here("data", "caloes.rdata"), verbose=TRUE) # cal_oes and _oesco
 corr_workers <- readRDS(here::here("data", "corr_workers.rds"))
 caworkers <- readRDS(here::here("data", "caworkers.rds"))
 cajobeduc <- readRDS(here::here("data", "cajobeduc.rds"))
+
+# SCO GCC data
+casco_gcc <- readRDS(here::here("data", "casco_gcc.rds")) 
 
 ```
 
@@ -2708,7 +2788,7 @@ write_csv(tabdata, here::here("results", "tab_model_summary_data.csv"))
 ```
 
 
-# Benefits
+# Pension benefits
 ## Get data
 ```{r}
 library(Microsoft365R)  # to download onedrive files
@@ -2745,7 +2825,6 @@ od$download_file(src=odpath, dest=static, overwrite = TRUE)
 
 ## Get updated workers data
 ```{r}
-
 # update worker data -------------------------------------------------------------
 workers1 <- read_excel(static, sheet="workers")
 
@@ -2757,6 +2836,209 @@ workers <- workers1 %>%
          fyos=aor - aoe) %>%  # final years of service
   select(worker, yob, yoe, yod, aoe, aor, aod, fyos, fas)
 workers
+
+```
+
+## parameters
+```{r}
+# update retirement plan parameters ---------------------------------------
+prange <- "B2:K49"
+params1 <- read_excel(static, sheet="retplan_parameters", range=prange, skip = 1)
+params1
+
+params2 <- params1 %>%
+  filter(!is.na(col)) %>%
+  pivot_longer(cols=-col, names_to = "xletter") %>%
+  pivot_wider(names_from = col)
+params2
+
+idvars <- c("xletter", "stabbr", "tier", "tname")
+lvars <- c("ss_covered", "db_covered", "db_cola_compound", "dc_covered") # logical
+cvars <- NULL  # character
+nvars <- setdiff(names(params2), c(idvars, lvars, cvars))  # numeric
+nvars
+params <- params2 %>%
+  select(-xletter) %>%
+  mutate(across(all_of(lvars), as.logical),
+         across(all_of(nvars), as.numeric))
+params
+glimpse(params)
+summary(params)
+
+```
+
+```{r}
+# merge workers and parameters --------------------------------------------
+names(workers)
+names(params)
+xvars <- c("stabbr", "tier", "tname", "db_covered", "ss_covered", "dc_covered")
+paramvars <- setdiff(names(params), xvars)
+data <- 
+  full_join(workers, params,
+            by = character()) %>%  # cartesian product
+  nest(wdata=c(yob:fas)) %>%  # worker data
+  nest(params=all_of(paramvars)) %>%  # retirement plan parameters
+  mutate(id=row_number()) %>%
+  select(id, worker, stabbr, tier, tname, db_covered, ss_covered, dc_covered, everything())
+data
+
+# data <- expand_grid(params, workers)  # same thing as full join by character()
+data %>%
+  unnest(wdata)
+
+data %>%
+  unnest(params)
+
+```
+
+## Define additional parameters and functions
+```{r cpi}
+#.. ONETIME get and save cpi: only do this when data are updated ----
+# source(here::here("r", "ONETIME_get_and_save_cpi.r"))
+#.. END ONETIME get and save cpi ----
+
+# inflation constants
+realwage_pch <-  0.009007175  # average real growth in wage index, 1950-ish to 2020
+cpi_pch <- .02
+nomwage_pch <- realwage_pch + cpi_pch
+
+# Social Security parameters
+ss_eecrate <- .062
+source(here::here("r", "functions_socsec.r"))
+
+source(here::here("r", "functions_DBplans.r"))
+source(here::here("r", "functions_DCplans.r"))
+
+```
+
+## Calculate results
+```{r}
+# calculate results -------------------------------------------------------
+data %>% unnest(cols=params)
+
+check <- data %>%
+  # filter(stabbr != "MA") %>%
+  rowwise() %>%
+  # build a series of list-columns each of which has a dataframe from age of entry to age of death
+  mutate(base=list(fbase(wdata)),
+         socsec=list(fsocsec(ss_covered, wdata, base, params))) %>%
+  unnest(cols=c(base, socsec))
+
+retinc <- data %>%
+  # filter(stabbr != "MA") %>%
+  rowwise() %>%
+  # build a series of list-columns each of which has a dataframe from age of entry to age of death
+  mutate(base=list(fbase(wdata)),
+         socsec=list(fsocsec(ss_covered, wdata, base, params)),
+         pension=list(pension(db_covered, stabbr, tier, wdata, base, params)),
+         dcvalues=list(dcvalues(dc_covered, wdata, base, params)))
+retinc
+# glimpse(retinc)
+```
+
+
+# Employee health benefits
+
+
+```{r}
+# gcc benefits ----
+
+coeh2 <- coeh %>%
+  mutate(hlthpct=healthdentalvision / totalwages)
+quantile(coeh2$hlthpct, na.rm=TRUE)  
+
+coeh2 %>%
+  group_by(position) %>%
+  summarise(qtiledf(.data$hlthpct))
+
+coeh2 %>%
+  group_by(position) %>%
+  summarise(n=n(),
+            wages=sum(totalwages), 
+            hdv=sum(healthdentalvision),
+            across(c(regularpay, overtimepay, lumpsumpay, otherpay, totalwages, healthdentalvision), mean),
+            .groups = "drop") %>%
+  mutate(pct=hdv / wages,
+         pctreg=healthdentalvision / regularpay,
+         totvreg=totalwages / regularpay)
+
+coeh2 %>%
+  filter(hlthpct < 1, hlthpct > 0) %>%
+  filter(totalwages >= 10e3, hlthpct > .1) %>%
+  ggplot(aes(totalwages, hlthpct)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10()
+
+```
+
+
+# Compare wage data from different data sources
+```{r}
+taboes <- oesres_clean %>%
+  filter(year==2020, stabbr=="CA", level=="state") %>%
+  mutate(src="oes", n=nrow(.)) %>%
+  select(src, n, emp, wage=amean)
+
+tabacs <- caworkers %>%
+  filter(soc=="33-3012", level=="state") %>%
+  summarise(src="acs", n=n(), emp=sum(pwgtp), wage=wtd.mean(rwagp, weights = pwgtp))
+
+tabgcc <- casco_gcc %>%
+  summarise(src="gcc", n=n(), emp=n(), across(c(totwage, regpay, otpay, lumppay, otherpay), mean)) %>%
+  rename(wage=totwage) %>%
+  mutate(regot=regpay + otpay) %>%
+  select(src, n, emp, wage, regot, everything())
+
+tabdata <- bind_rows(taboes, tabacs, tabgcc) %>%
+  mutate(src=factor(src,
+                    levels=c("oes", "acs", "gcc"),
+                    labels=c("Occupational Employment and Wage Statistics",
+                             "American Community Survey (2019 5-year ACS PUMS)",
+                             "SCO's Government Compensation in California")))
+tabdata
+
+tab <- tabdata %>%
+  select(-regot) %>%
+  gt() %>%
+  tab_header(
+    title = "California state correctional officer average pay in 2020",
+    subtitle = "Different data sources"
+      ) %>%
+  tab_spanner("Components of total wages", columns=-c(src, n, emp, wage)) %>%
+  cols_label(src=html("Data source"),
+             n=html("# of records in the data"),
+             emp=html("# of workers represented by the data"),
+             wage=html("Total wages"),
+             regpay=html("Regular pay"),
+             otpay=html("Overtime pay"),
+             lumppay=html("Lump sum pay"),
+             otherpay=html("Other pay")
+             ) %>%
+  cols_align(align="left", columns = src) %>%
+  fmt_number(
+    columns=c(wage, contains("pay")),
+    pattern="${x}",
+    decimals=0
+  ) %>%
+  fmt_number(
+    columns=c(n, emp),
+    decimals=0
+  ) %>%
+  fmt_missing(columns = everything(), missing_text = "--") %>%
+  cols_width(
+    src ~ px(150),
+    c(n, emp) ~ px(75),
+    everything() ~ px(50)
+    ) %>%
+  tab_options(
+    table.width = pct(85)
+  )
+
+tab
+# webshot options
+# default zoom=2, expand=5
+gtsave(tab, filename="tab_data_compare.png", path=here::here("results"), zoom=1.5, expand=10)
 
 ```
 
