@@ -7,7 +7,7 @@ dcvalues <- function(dc_covered, w, b, p){
   
   # get dc_annuity_factor for $1 of assets
   # iannuity <- gaip(1, p$dc_ror, n=w$aod - w$aor, g=cpi_pch)
-  
+ 
   dcvalues <- unnest(b, cols = c()) %>%
     mutate(dc_assets_boy=0,
            dc_eec=p$dc_eec_rate * wage,
@@ -16,6 +16,7 @@ dcvalues <- function(dc_covered, w, b, p){
            dc_invassets=0,
            dc_invinc=0,
            dc_assets_eoy=0)
+  
   
   # calculate the first year
   dcvalues$dc_invassets[1] <- dcvalues$dc_eec[1] + dcvalues$dc_erc[1]

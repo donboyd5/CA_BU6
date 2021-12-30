@@ -14,22 +14,35 @@ pension <- function(db_covered, stabbr, tier, w, b, p){
                                    (p$db_benfactor_normal - p$db_benfactor_min) / max_early_years,
                                    0)
   
-  # eec <- function(stabbr, tier, wage, p) {
-  #   case_when(stabbr=="CA" ~ 
-  #               pmax(wage - p$db_eec_exclude, 0) * p$db_eec_rate,
-  #             stabbr=="MA" ~ wage * .09 + pmax(wage - 30000, 0) * .02,
-  #             TRUE ~ pmax(wage - p$db_eec_exclude, 0) * p$db_eec_rate
-  #             )
-  # }
-  
   eec <- function(stabbr, tier, wage, p) {
     p$db_eec_rate1 * pmin(wage, p$db_eec_ceiling1) +
       p$db_eec_rate2 * pmax(wage - p$db_eec_ceiling1, 0)
   }
   
-  cola <- function(stabbr, tier, p) {
-    
-  }
+  cola <- function(ipension, age, aor, cola_ceil1, cola_rate1, compound) {
+    # CAUTION: does not implement the 2nd cola rate a la OR
+    ipension <- ipension[1]  # this will come in as a vector
+    cola1_0 <- pmin(ipension, cola_ceil1)
+    nyears <- length(age)
+    pension_year <- pmax(age - aor + 1, 0)
+    db_noncola_part <- ifelse(ipension > cola1_0, ipension - cola1_0, 0) * (pension_year > 0)
+    if(compound) {
+      db_cola_part <- cola1_0 * (1 + cola_rate1)^(pension_year - 1) * (pension_year > 0) 
+    } else db_cola_part <- (cola1_0 + cola1_0 * cola_rate1 * (pension_year - 1)) * (pension_year > 0)
+    db_pension <- db_noncola_part + db_cola_part
+    # tibble(age, noncola_part, cola_part, pension)
+    tibble(db_noncola_part, db_cola_part, db_pension)
+    }
+
+  # test data  
+  # cola(ipension, age, aor, cola_ceil1, cola_rate1, compound=FALSE)
+  # age <- 50:65
+  # aor <- 55
+  # cola_ceil1 <- 10e3
+  # cola_rate1 <- .02
+  # cola_ceil2 <- 55e3
+  # cola_rate2 <- .0
+  # ipension <- 50e3
   
   # compute employee contributions and benefits by year
   results <- unnest(b, cols = c()) %>%
@@ -44,18 +57,7 @@ pension <- function(db_covered, stabbr, tier, w, b, p){
            db_pctfas_uncapped=db_benfactor * w$fyos,
            db_pctfas=pmin(db_pctfas_uncapped, p$db_max_benpct),
            ipension=w$fas * db_pctfas, # initial pension
-           db_pension2=ifelse(age >= w$aor,
-                              ipension * (1 + p$db_cola_rate)^(b$yor - 1),
-                              0),
-           db_pension_colagrown=ifelse(age >= w$aor,
-                                       p$db_cola_base * (1 + p$db_cola_rate)^(b$yor - 1),
-                                       0),
-           db_pension_base=case_when(age < w$aor ~ 0,
-                                     p$db_cola_base==0 ~
-                                       ipension * (1 + p$db_cola_rate)^(b$yor - 1),
-                                     p$db_cola_base > 0 ~ ipension,
-                                     TRUE ~ -1e99),
-           db_pension=db_pension_colagrown + db_pension_base
+           cola(ipension, age, aor=w$aor, cola_ceil1=p$db_cola_ceiling1, cola_rate1=p$db_cola_rate1, compound=p$db_cola_compound) # returns a data frame
     ) %>%
     select(-names(b), -ipension)
   results

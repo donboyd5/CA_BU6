@@ -2957,6 +2957,21 @@ write_csv(tabdata, here::here("results", "tab_model_summary_data.csv"))
 
 # Pension benefits
 ## Get data
+
+```{r}
+# get casco_premiums
+casco_premiums <- 
+  cfe_states %>%
+  filter(stabbr %in% c("MA", "OR", "TX")) %>%
+  select(group=stabbr, ca_vsother) %>%
+  bind_rows(cacluster_vros %>%
+              mutate(group="private") %>%
+              select(group, ca_vsother=cfepct))
+casco_premiums
+
+```
+
+
 ```{r}
 # constants ---------------------------------------------------------------
 
@@ -2990,17 +3005,6 @@ od$download_file(src=odpath, dest=static, overwrite = TRUE)
 
 ## Get updated workers data
 ```{r}
-# get casco_premiums
-casco_premiums <- 
-  cfe_states %>%
-  filter(stabbr %in% c("MA", "OR", "TX")) %>%
-  select(group=stabbr, ca_vsother) %>%
-  bind_rows(cacluster_vros %>%
-              mutate(group="private") %>%
-              select(group, ca_vsother=cfepct))
-casco_premiums
-
-
 # update worker data -------------------------------------------------------------
 workers1 <- read_excel(static, sheet="workers")
 
@@ -3018,7 +3022,7 @@ workers
 ## parameters
 ```{r}
 # update retirement plan parameters ---------------------------------------
-prange <- "B4:K51"
+prange <- "B4:K52"
 params1 <- read_excel(static, sheet="retplan_parameters", range=prange, skip = 1)
 params1
 
@@ -3083,16 +3087,17 @@ nomwage_pch <- realwage_pch + cpi_pch
 
 # Social Security parameters
 ss_eecrate <- .062
-source(here::here("r", "functions_socsec.r"))
-
-source(here::here("r", "functions_DBplans.r"))
-source(here::here("r", "functions_DCplans.r"))
-
 ```
 
-## Calculate results
 ```{r}
-# calculate results -------------------------------------------------------
+# source functions ----
+source(here::here("r", "functions_socsec.r"))
+source(here::here("r", "functions_DBplans.r"))
+source(here::here("r", "functions_DCplans.r"))
+```
+
+```{r}
+# checks ----
 data %>% unnest(cols=params)
 
 check <- data %>%
@@ -3100,9 +3105,21 @@ check <- data %>%
   rowwise() %>%
   # build a series of list-columns each of which has a dataframe from age of entry to age of death
   mutate(base=list(fbase(wdata)),
-         socsec=list(fsocsec(ss_covered, wdata, base, params))) %>%
+         socsec=list(fsocsec(ss_covered, wdata, base, params)),
+         pension=list(pension(db_covered, stabbr, tier, wdata, base, params))) %>%
   unnest(cols=c(base, socsec))
 
+check <- data %>%
+  # filter(stabbr != "MA") %>%
+  rowwise() %>%
+  # build a series of list-columns each of which has a dataframe from age of entry to age of death
+  mutate(base=list(fbase(wdata)),
+         dcvalues=list(dcvalues(dc_covered, wdata, base, params))) %>%
+  unnest(cols=c(base, dcvalues))
+```
+
+## Calculate results
+```{r}
 retinc <- data %>%
   # filter(stabbr != "MA") %>%
   rowwise() %>%
@@ -3111,9 +3128,98 @@ retinc <- data %>%
          socsec=list(fsocsec(ss_covered, wdata, base, params)),
          pension=list(pension(db_covered, stabbr, tier, wdata, base, params)),
          dcvalues=list(dcvalues(dc_covered, wdata, base, params)))
-retinc
+# retinc
 # glimpse(retinc)
 ```
+
+## Summarize results
+```{r}
+dr <- .04
+age0 <- 50
+year0 <- 2021
+
+pvyear0 <- function(value, dr, year, year0) {
+  # pv in a given year
+  value / {(1 + dr)^(year - year0)}
+}
+
+```
+
+```{r}
+# pvage0 <- function(value, dr, age, age0) {
+#   # pv in a given year
+#   value / {(1 + dr)^(age - age0)}
+# }
+
+# pv=~pvage0(.x, dr, age, age0))
+# pv=~pvyear0(.x, dr, year, year0))
+
+retinc_pv <- retinc %>%
+  unnest(cols = c(wdata, base, socsec, pension, dcvalues, params)) %>%
+  mutate(across(where(is.numeric), ~replace(., is.na(.), 0))) %>%
+  mutate(tier=factor(tier, levels=c("major", "prior", "newhire", "private"))) %>%
+  group_by(stabbr, tier, tname, worker) %>%
+  arrange(age) %>%
+  mutate(across(.cols=c(db_eec, db_pension,
+                        sstax, ssbenefit,
+                        dc_eec, dc_annuity),
+                list(pv=~pvyear0(.x, dr, year, year0)))) %>%
+  ungroup %>%
+  arrange(stabbr, tier, tname, worker) 
+glimpse(retinc_pv)
+summary(retinc_pv) # make sure there are no NA values
+ns(retinc_pv)
+
+# tmp <- retinc_pv %>%
+#   filter(db_pctfas != db_pctfas_uncapped)
+
+results <- retinc_pv %>%
+  group_by(worker, stabbr, tier, tname) %>%
+  summarise(fyos=first(fyos),
+            aoe=first(aoe),
+            aor=first(aor),
+            aod=first(aod),
+            db_pctfas=first(db_pctfas),
+            db_eec_pv=sum(db_eec_pv),
+            db_pension_pv=sum(db_pension_pv),
+            sstax_pv=sum(sstax_pv),
+            ssbenefit_pv=sum(ssbenefit_pv),
+            dc_eec_pv=sum(dc_eec_pv),
+            dc_annuity_pv=sum(dc_annuity_pv),
+            .groups="drop") %>%
+  mutate(net_penpv=db_pension_pv - db_eec_pv,
+         net_sspv=ssbenefit_pv - sstax_pv,
+         net_dcpv=dc_annuity_pv - dc_eec_pv,
+         net_dbdcpv=net_penpv + net_dcpv,
+         net_retpv=net_penpv + net_sspv + net_dcpv) %>%
+  arrange(worker, stabbr, tier) 
+```
+
+
+## Examine results
+```{r}
+results %>%
+  select(worker, stabbr, tier, tname, aoe, aor, aod, contains("net")) %>%
+  arrange(desc(net_retpv))
+
+# TX has negative!!
+results %>%
+  filter(stabbr=="TX", worker==1, tier=="newhire") %>%
+  pivot_longer(-c(worker, stabbr, tier, tname))
+# db_pctfas          -0.411
+
+# all retirement income, including SS
+results %>%
+  select(worker, stabbr, tier, tname, aoe, aor, aod, net_retpv) %>%
+  pivot_wider(names_from = c(tier, tname), values_from = net_retpv)
+
+# just net pension benefits (not SS)
+results %>%
+  select(worker, stabbr, tier, tname, aoe, aor, aod, net_dbdcpv) %>%
+  pivot_wider(names_from = c(tier, tname), values_from = net_dbdcpv)
+
+```
+
 
 
 # Employee health benefits
