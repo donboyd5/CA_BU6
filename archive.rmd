@@ -162,80 +162,6 @@ I take 3 approaches to within-California comparisons:
 2.   Compare state government correctional officers to private sector workers in law, public safety, corrections & security occupations
 3.   Compare state government correctional officers to private sector workers in occupations where workers have simlar education attainment
 
-```{r wpius_table}
-
-tabbase <- wpius_5year %>%
-  filter(nge5k==5) %>% # must have all 5 years with ftes >= 5k
-  arrange(desc(rate_calc)) %>%
-  mutate(rank=row_number(),
-         stateco=ocode=="333012" & ownf=="state",
-         ownf=ifelse(ownf %in% c("state", "local"), paste0(ownf, " gov"), as.character(ownf)),
-         label=paste0(oname, " (", ownf, ")"),
-         # Delete non-alphanumeric and selected punctuation
-         label=str_replace_all(label, "[^[:alnum:] (),-]", ""),
-         label=str_replace(label, "sheriffs", "sheriff's"),
-         pdvsco=rate_calc / rate_calc[stateco] - 1,
-         copdvsother=rate_calc[stateco] / rate_calc - 1)
-
-noccs <- nrow(tabbase)
-
-topn <- 25
-tabdata <- tabbase %>%
-  filter(rank <= topn | ocode=="333012") %>%
-  arrange(rank) %>%
-  select(ocode, label, rate_calc, rank, pdvsco)
-
-tab <- tabdata %>%
-  gt() %>%
-  cols_hide(c(ocode, pdvsco, copdvsother)) %>%
-  tab_header(
-    title = "Nonfatal workplace injuries and illnesses in the United States, 2015-2019 average",
-    subtitle = paste0("Top ", topn, 
-                      " occupation-sector combinations, plus correctional officers by sector, out of ",
-                      noccs, 
-                      " occupation-sector combinations")
-      ) %>%
-  tab_spanner(label=html("Injuries and illnesses requiring days away from work"),
-              columns=c(rate_calc, rank)) %>%
-  cols_label(label="",
-             rate_calc=html("Rate"),
-             rank="Rank"
-             ) %>%
-  cols_align(align="left", columns = label) %>%
-  fmt_number(
-    columns=rate_calc,
-    pattern = "{x}",
-    decimals=1
-  ) %>%
-  fmt_number(
-    columns=rank,
-    pattern = "{x}",
-    decimals=0
-  ) %>%
-  tab_source_note(paste0("Source: ", source_wpi, ".")) %>%
-  cols_width(
-    label ~ px(650),
-    everything() ~ px(140)
-    ) %>%
-  tab_style(
-    style = list(
-      cell_text(weight = "bold") # size = px(15), , font = "arial"
-      ),
-    locations = cells_body(
-      rows=str_detect(label, "Correctional")
-      )
-    ) %>%
-  tab_footnote(
-    footnote = "Per 10,000 full-time equivalent employees, per year.",
-    locations = cells_column_labels(columns = rate_calc)
-    )
-tab
- 
-# webshot options
-# default zoom=2, expand=5
-gtsave(tab, filename="tab_wpius.png", path=here::here("results"), zoom=1, expand=10)
-
-```
 
 
 ```{r wpi_us}
@@ -294,56 +220,6 @@ camod_fsl <- feols(lrppwagp ~ exp + exp2 + edattain + marstat + sex + rachisp + 
 summary(camod_fsl)
 count(cacorr_fslacs, cowf)
 
-```
-
-Get state-centric fixed effects
-```{r fsl_fe}
-fe <- fixef(camod_fsl)
-cfe <- fe$cowf - mean(fe$cowf)
-# summary(fe)
-
-# centered fixed effects
-cfe <- tibble(cowf=names(fe$cowf), fe=fe$cowf) %>%
-  mutate(cfe=fe - mean(fe),
-         cfepct=exp(cfe) -1,
-         state_vsother=(1 + cfepct[cowf=="state"]) / (1 + cfepct) - 1) %>%
-  arrange(desc(cfepct))
-cfe
-
-tab <- cfe %>%
-  filter(cowf %in% c("local", "federal")) %>%
-  select(cowf, state_vsother) %>%
-  mutate(cowf=factor(cowf, 
-                     levels=c("local", "federal"), 
-                     labels=c("Local government", "Federal government"))) %>%
-  gt() %>%
-  tab_header(
-    title = html("California state correctional officer wage premium<br>versus local and federal correctional officers")
-      ) %>%
-  cols_label(cowf="Employer",
-             state_vsother=html("Premium vs. other<br>level of government")
-             ) %>%
-  cols_align(align="left", columns = cowf) %>%
-  fmt_percent(
-    columns=state_vsother,
-    # pattern = "{x}",
-    decimals=1
-  ) %>%
-  tab_source_note(paste0("Source: ", source_acs, ".")) %>%
-  tab_footnote("Adjusted for within-state cost-of-living differences and controlling for education, experience, and demographic characteristics.",
-               locations = cells_column_labels(columns = state_vsother)) %>%
-  cols_width(
-    cowf ~ pct(40),
-    everything() ~ pct(60)
-    ) %>%
-  tab_options(
-    table.width = pct(50)
-  )
- tab
-# webshot options
-# default zoom=2, expand=5
-gtsave(tab, filename="tab_fslpremium.png", path=here::here("results"), zoom=2, expand=5)
-  
 ```
 
 ### Descriptive analysis
