@@ -57,6 +57,7 @@ library(scales)
 library(lubridate)
 library(purrr)
 library(readxl)
+library(openxlsx)  # for writing
 # devtools::install_dev("vroom")
 library(vroom)
 library(haven)
@@ -1699,7 +1700,7 @@ Here we look at raw wages, without controlling for differences across workers su
 
 In addition, this is a sanity check on two different data sources:
 
--   Occupational Employment and Wage Statistics (OEWS or OES), research database: This is the gold standard for cross-state comparison in the number of workers or their average wages. But it is only one number per occupation per state per year (e.g., correctional officers in California in 2020 were paid \$88,710 on average). We don't have data for the individual workers used to derive state totals so we can't see how it varies within and across states with education, experience, etc. (Later, we will examine a version of the OES that has data for each MSA in California.) We look at this with, and without, adjusting for price differences across states.
+-   Occupational Employment and Wage Statistics (OEWS or OES), research database: This is the gold standard for cross-state comparison in the number of workers or their average wages. But it is only one number per occupation per state per year (e.g., correctional officers in California in 2020 were paid $88,710 on average). We don't have data for the individual workers used to derive state totals so we can't see how it varies within and across states with education, experience, etc. (Later, we will examine a version of the OES that has data for each MSA in California.) We look at this with, and without, adjusting for price differences across states.
 
 -   American Community Survey (ACS): This is a public-use survey that has details on (anonymized) individuals - their age, educational attainment, gender, race, ethnicity, marital status, state of residence, and other information. The survey has 15 million observations nationally (including children and retired people), 840 of which are for correctional officers in California. The richness of this data allows us to control for differences in education, experience, and other characteristics (and later, it allows us to compare correctional officers to the private sector).
 
@@ -1710,7 +1711,7 @@ We show average wages at 2020 levels from these two sources in the two figures b
 ## Wages based on the OES
 
 ### Nominal wages
-```{r oes_nominal, include=TRUE, fig.width=10, fig.height=8}
+```{r fig_wages_oes, include=TRUE, fig.width=10, fig.height=8}
 
 pdata <- corr_oes %>%
   filter(year==2020, stabbr != "US") %>%
@@ -1747,9 +1748,8 @@ p <- pdata %>%
   caption_left
 p
 
-ggsave(here::here("results", "wages_oes.png"), plot=p, width=10, height=8, scale=1)
-write_csv(pdata, here::here("results", "wages_oes_data.csv"))
-
+ggsave(here::here("results", "fig_wages_oes.png"), plot=p, width=10, height=8, scale=1)
+write_csv(pdata, here::here("results", "fig_wages_oes_data.csv"))
 
   # geom_text(aes(x=xmoved, label=comma(x=wage, accuracy=1, prefix="$")),
   #           hjust=0, size=2.25,
@@ -1761,7 +1761,7 @@ write_csv(pdata, here::here("results", "wages_oes_data.csv"))
 ```
 
 ### Real wages over time
-```{r wage_tab}
+```{r tab_wages_states_oes}
 # https://cran.r-project.org/web/packages/viridis/vignettes/intro-to-viridis.html
 # https://www.r-graph-gallery.com/ggplot2-color.html
 storder <- c("CA", "US", "MA", "RI", "AZ", "NV", "OR") # use stabbr for convenience
@@ -1827,7 +1827,8 @@ tab <- bind_rows(tibble(stname="California and the U.S.:"), tabdata) %>%
     )
 
 tab
-gtsave(tab, filename="tab_wage_states.png", path=here::here("results"))
+gtsave(tab, filename="tab_wages_states_oes.png", path=here::here("results"))
+write_csv(tabdata, file=here::here("results", "tab_wages_states_oes_data.csv"))
 
 # library(viridis)
 ```
@@ -1838,7 +1839,7 @@ gtsave(tab, filename="tab_wage_states.png", path=here::here("results"))
 Now we look at the same data (OES), adjusted for price differences across states. Not surprisingly California wages are not as far above other states after adjusting for price differences, because California is expensive, but the differences are still large.
 
 
-```{r oes_col, include=TRUE, fig.width=6, fig.height=8}
+```{r tab_rppwage_states_oes, include=TRUE, fig.width=6, fig.height=8}
 top10data <- corr_oes %>%
   filter(year==2020) %>%
   mutate(rpprank=ifelse(stabbr != "US",
@@ -1887,7 +1888,8 @@ tab <- top10data %>%
     )
 
 tab
-gtsave(tab, filename="tab_rppwage_states.png", path=here::here("results"), expand = 10)
+gtsave(tab, filename="tab_rppwage_states_oes.png", path=here::here("results"), expand = 10)
+write_csv(tabdata, file=here::here("results", "tab_rppwage_states_oes_data.csv"))
 
 ```
 
@@ -1896,7 +1898,7 @@ gtsave(tab, filename="tab_rppwage_states.png", path=here::here("results"), expan
 
 The similarity between the ACS plot here and the OES plot above give us confidence when using the ACS to control for differences across individuals.
 
-```{r wages_acs_dots, include=TRUE, fig.width=6, fig.height=8}
+```{r fig_wages_acs, include=TRUE, fig.width=6, fig.height=8}
 
 gtitle <- "State correctional officer salaries"
 gsubtitle <- "Based on a 5-year sample adjusted to 2020 income levels"
@@ -1926,7 +1928,9 @@ p <- pdata %>%
 
 p
 
-ggsave(here::here("results", "wages_acs.png"), plot=p, width=10, height=8, scale=1.25)
+# ggsave(here::here("results", "fig_wages_acs.png"), plot=p, width=10, height=8, scale=1.25)
+# write_csv(pdata, file=here::here("results", "fig_wages_acs_data.csv"))
+
 ```
 
 
@@ -2004,7 +2008,7 @@ p
     
 
 ## Table summarizing California Correctional workers versus other states
-```{r tab_acs_summary, include=TRUE}
+```{r tab_educ_exp_acs, include=TRUE}
 
 # top10data  # top 10 from OES
 
@@ -2049,13 +2053,14 @@ tab <- tabdata %>%
   )
 
 tab
-gtsave(tab, filename="tab_educ_exp.png", path=here::here("results"), expand = 10)
+gtsave(tab, filename="tab_educ_exp_acs.png", path=here::here("results"), expand = 10)
+write_csv(tabdata, file=here::here("results", "tab_educ_exp_acs_data.csv"))
 
 ```
 
 # Workplace injury tables
 
-```{r wpiih_table}
+```{r tab_intentional_injuries_wpi}
 # workplace injuries -- intentional harm by another person
 
 topn <- 25
@@ -2121,12 +2126,13 @@ tab
  
 # webshot options
 # default zoom=2, expand=5
-gtsave(tab, filename="tab_wpih.png", path=here::here("results"), zoom=1, expand=10)
+gtsave(tab, filename="tab_intentional_injuries_wpi.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_intentional_injuries_wpi_data.csv"))
 
 ```
 
 
-```{r wpius_table}
+```{r tab_injuries_wpi}
 tabbase <- wpius_5year %>%
   filter(nge5k==5) %>% # must have all 5 years with ftes >= 5k
   arrange(desc(rate_calc)) %>%
@@ -2196,8 +2202,8 @@ tab
  
 # webshot options
 # default zoom=2, expand=5
-gtsave(tab, filename="tab_wpius.png", path=here::here("results"), zoom=1, expand=10)
-
+gtsave(tab, filename="tab_injuries_wpi.png", path=here::here("results"), zoom=1, expand=10)
+write_csv(tabdata, file=here::here("results", "tab_injuries_wpi_data.csv"))
 ```
 
 
@@ -2266,7 +2272,12 @@ cfe_states
 
 ```
 
-```{r plot_statecos}
+```{r fig_model_statefe_bar}
+
+pdata <- cfe_states  %>%
+  mutate(label=ifelse(row_number() <= 5, percent(cfepct, accuracy=.1), "")) %>%
+  mutate(grp=ifelse(stabbr=="CA", "CA", "other"))
+
 gtitle <- "State correctional officer wages relative to those in the average state"
 gsub1 <- "Controlling for experience, education, and demographic characteristics"
 gsub2 <- "Wages adjusted for differences in state cost of living"
@@ -2274,9 +2285,8 @@ gsubtitle <- paste0(gsub1, "\n", gsub2)
 capt1 <- paste0("\nSource: ", source_acs, "; and ", source_rpp, ".")
 capt2 <- "Note: States with fewer than 50 observations were grouped together."
 capt <- paste0(str_wrap(capt1, 100), "\n", capt2)
-statefe_bar <- cfe_states  %>%
-  mutate(label=ifelse(row_number() <= 5, percent(cfepct, accuracy=.1), "")) %>%
-  mutate(grp=ifelse(stabbr=="CA", "CA", "other")) %>%
+
+statefe_bar <- pdata %>%
   ggplot(aes(y=reorder(stname, cfepct), x=cfepct)) +
   geom_col(aes(fill=grp), size=1.5, width=0.1) +
   geom_point(aes(colour=grp), size=0.75) +
@@ -2296,7 +2306,9 @@ statefe_bar <- cfe_states  %>%
 
 statefe_bar
 
-ggsave(here::here("results", "statefe_bar.png"), plot=statefe_bar, width=10, height=8, scale=1.0)
+ggsave(here::here("results", "fig_model_statefe_bar.png"),
+       plot=statefe_bar, width=10, height=8, scale=1.0)
+write_csv(pdata, file=here::here("results", "fig_model_statefe_bar_data.csv"))
 
 ```
 
@@ -2347,14 +2359,16 @@ cacorrfsl_vros
 
 
 Get state-centric fixed effects
-```{r tab_fsl_fe}
+```{r tab_model_fslpremium}
 
-tab <- cfe_cacorrfsl %>%
+tabdata <- cfe_cacorrfsl %>%
   filter(level %in% c("local", "federal")) %>%
   select(level, casco_vsother) %>%
   mutate(level=factor(level, 
                      levels=c("local", "federal"), 
-                     labels=c("Local government", "Federal government"))) %>%
+                     labels=c("Local government", "Federal government")))
+
+tab <- tabdata %>%
   gt() %>%
   tab_header(
     title = html("California state correctional officer wage premium<br>versus local and federal correctional officers")
@@ -2384,7 +2398,8 @@ tab <- cfe_cacorrfsl %>%
 tab
 # webshot options
 # default zoom=2, expand=5
-gtsave(tab, filename="tab_fslpremium.png", path=here::here("results"), zoom=2, expand=5)
+gtsave(tab, filename="tab_model_fslpremium.png", path=here::here("results"), zoom=2, expand=5)
+write_csv(tabdata, file=here::here("results", "tab_model_fslpremium_data.csv"))
   
 ```
 
@@ -2545,7 +2560,12 @@ calawjobs_vros
 ```
 
 
-```{r plot_lawcluster}
+```{r fig_model_lawcluster}
+pdata <- cfe_calawjobs  %>%
+  mutate(label=ifelse(row_number() <= 5, percent(cfepct, accuracy=.1), "")) %>%
+  mutate(grp=ifelse(casco, "CA", "other")) %>%
+  mutate(occgroup=ifelse(occgroup=="lowobs", "Low-observation occupations as a group", occgroup))
+
 gtitle <- "California state correctional officer wages relative to jobs in the Law, Public Safety, Corrections & Security occupation cluster"
 gsub1 <- "Controlling for experience, education, and demographic characteristics"
 gsub2 <- "Wages adjusted for within-California differences in cost of living"
@@ -2556,10 +2576,7 @@ capt2 <- paste0("Price adjustments using ", source_rpp, ".")
 capt3 <- "Note: Occupations with fewer than 50 observations were grouped together."
 capt <- paste0(capt1, "\n", capt2, "\n", capt3)
 
-lawclustfe_bar <- cfe_calawjobs  %>%
-  mutate(label=ifelse(row_number() <= 5, percent(cfepct, accuracy=.1), "")) %>%
-  mutate(grp=ifelse(casco, "CA", "other")) %>%
-  mutate(occgroup=ifelse(occgroup=="lowobs", "Low-observation occupations as a group", occgroup)) %>%
+lawclustfe_bar <- pdata  %>%
   ggplot(aes(y=reorder(str_wrap(occgroup, 40), cfepct), x=cfepct)) +
   # ggplot(aes(y=reorder(occgroup, cfepct), x=cfepct)) +
   geom_col(aes(fill=grp), size=1.5, width=0.1) +
@@ -2580,7 +2597,8 @@ lawclustfe_bar <- cfe_calawjobs  %>%
 
 lawclustfe_bar
 
-ggsave(here::here("results", "lawclustfe_bar.png"), plot=lawclustfe_bar, width=10, height=8, scale=1.3)
+ggsave(here::here("results", "fig_model_lawcluster.png"), plot=lawclustfe_bar, width=10, height=8, scale=1.3)
+write_csv(pdata, file=here::here("results", "fig_model_lawcluster_data.csv"))
 
 ```
 
@@ -2713,7 +2731,7 @@ cacluster_vros
 ```
 
 
-```{r tab_cluster_top10}
+```{r tab_model_jobcluster_top10}
 tabdata <- cfe_cacluster %>%
   select(occgroup, cfepct, rank, casco) %>%
   filter(rank <= 10)
@@ -2751,11 +2769,12 @@ tab
 
 # webshot options
 # default zoom=2, expand=5
-gtsave(tab, filename="tab_cluster_regtop10.png", path=here::here("results"), zoom=2, expand=5)
-write_csv(tabdata, here::here("results", "tab_cluster_regtop10_data.csv"))
+gtsave(tab, filename="tab_model_jobcluster_top10.png",
+       path=here::here("results"), zoom=2, expand=5)
+write_csv(tabdata, here::here("results", "tab_model_jobcluster_top10_data.csv"))
 ```
 
-```{r plot_cluster_bar}
+```{r fig_model_jobcluster_bar}
 gtitle <- "California state correctional officer wages relative to wages for jobs in the same occupational cluster"
 gsub1 <- "Controlling for experience, education, and demographic characteristics"
 gsub2 <- "Wages adjusted for within-California differences in cost of living"
@@ -2769,7 +2788,9 @@ capt <- paste0(capt1, "\n", capt2, "\n", capt3)
 caclusterfe_bar <- cfe_cacluster  %>%
   mutate(label=ifelse(row_number() <= 5, percent(cfepct, accuracy=.1), "")) %>%
   mutate(grp=ifelse(casco, "CA", "other")) %>%
-  mutate(occgroup=ifelse(occgroup=="lowobs", "Low-observation occupations as a group", occgroup)) %>%
+  mutate(occgroup=ifelse(occgroup=="lowobs",
+                         "Low-observation occupations as a group", 
+                         occgroup)) %>%
   ggplot(aes(y=reorder(str_wrap(occgroup, 40), cfepct), x=cfepct)) +
   # ggplot(aes(y=reorder(occgroup, cfepct), x=cfepct)) +
   geom_col(aes(fill=grp), size=1.5, width=0.1) +
@@ -2790,7 +2811,9 @@ caclusterfe_bar <- cfe_cacluster  %>%
 
 caclusterfe_bar
 
-ggsave(here::here("results", "caclusterfe_bar.png"), plot=caclusterfe_bar, width=10, height=12, scale=1.3)
+ggsave(here::here("results", "fig_model_jobcluster_bar.png"), 
+       plot=caclusterfe_bar, width=10, height=12, scale=1.3)
+write_csv(tabdata, here::here("results", "fig_model_jobcluster_bar_data.csv"))
 
 ```
 
@@ -2805,7 +2828,7 @@ summary(moddum_cacluster)
 
 ### Descriptive stats table
 
-```{r cluster_table}
+```{r tab_cluster_comparison}
 tabdata <- caworkers_cluster %>%
   mutate(married=mar==1, male=sex=="male") %>%
   group_by(casco) %>%
@@ -2871,7 +2894,7 @@ write_csv(tabdata, here::here("results", "tab_cluster_comparison_data.csv"))
 
 # Summary table of casco premium (California state correctional officers)
 
-```{r premium_table}
+```{r tab_models_premium_summary}
 mod_vars <- read_delim(
 "modname; vrosname; compgroup
 moddum_states; states_vros; State correctional officers in other states (small states grouped together)
@@ -2938,21 +2961,61 @@ tab <- tabdata %>%
   tab_options(
     table.width = pct(75)
   )
-# tab %>%
-#   tab_style(
-#     style = cell_text(whitespace = "pre-wrap"),
-#     locations = cells_body(
-#       columns = ranking
-#       )
-#     )
 
 # webshot options
 # default zoom=2, expand=5
-gtsave(tab, filename="tab_model_summary.png", path=here::here("results"), zoom=1.5, expand=5)
-write_csv(tabdata, here::here("results", "tab_model_summary_data.csv"))
-  
+gtsave(tab, filename="tab_models_premium_summary.png", 
+       path=here::here("results"), zoom=1.5, expand=5)
+write_csv(tabdata, here::here("results", "tab_models_premium_summary_data.csv"))
 
 ```
+
+
+```{r fig_models_premium_summary_bar}
+pdata <- tabdata %>%
+  mutate(label=percent(casco_fepremium, accuracy=.1),
+         compgroup=ifelse(vrosname=="states_vros",
+                          "State correctional officers in other states", 
+                          compgroup))
+
+gtitle <- "California state correctional officer wage premium relative to comparison groups"
+gsub1 <- "Controlling for experience, education, and demographic characteristics"
+gsub2 <- "Wages adjusted for differences in cost of living"
+gsubtitle <- paste0(gsub1, ". ", gsub2, ".")
+
+capt1 <- paste0("\nSource: ", source_acs, ".")
+capt2 <- paste0("Price adjustments using ", source_rpp, ".")
+capt <- paste0(capt1, "\n", capt2)
+
+models_premium_summary_bar <- pdata %>%
+  ggplot(aes(x=reorder(str_wrap(compgroup, 40), desc(casco_fepremium)), y=casco_fepremium)) +
+  # ggplot(aes(str_wrap(compgroup, 40), casco_fepremium)) +
+  geom_col(fill="blue",  size=1, width=0.5) + #, size=1.5, width=0.1) +
+  # geom_point(colour="blue", size=0.75) +
+  geom_text(aes(label=label),
+            hjust=0.5, nudge_y=.01, size=3.5) +
+  scale_y_continuous(breaks=seq(0, 1, .1), labels=label_percent(accuracy = 1)) +
+  theme_bw() +
+  labs(y="% above group average, after controls", x=NULL,
+       caption=capt) +
+  ggtitle(label=gtitle, subtitle = gsubtitle) +
+  theme(axis.text = element_text(size=14),
+        axis.text.x = element_text(hjust = 0.5),
+        axis.title = element_text(size=16),
+        plot.title = element_text(size=20)) +
+  # scale_x_continuous(breaks=seq(-1, 1, .05), labels=label_percent(accuracy=1)) +
+  legend_none +
+  caption_left
+
+models_premium_summary_bar
+
+ggsave(here::here("results", "fig_models_premium_summary_bar.png"), 
+       plot=models_premium_summary_bar, width=12, height=8, scale=1.3)
+write_csv(pdata, here::here("results", "models_premium_summary_bar_data.csv"))
+
+
+```
+
 
 
 # Pension benefits
@@ -3008,13 +3071,17 @@ od$download_file(src=odpath, dest=static, overwrite = TRUE)
 # update worker data -------------------------------------------------------------
 workers1 <- read_excel(static, sheet="workers")
 
+# base everything on cyor -- calendar year of retirement
+cyor <- 2021
+
 workers <- workers1 %>%
   mutate(worker=row_number(),
-         yoe=2021,
-         yob=yoe - aoe,
-         yod=yob + aod,
+         cyor=!!cyor,
+         cyob=cyor - aor,
+         cyoe=cyob + aoe,
+         cyod=cyob + aod,
          fyos=aor - aoe) %>%  # final years of service
-  select(worker, yob, yoe, yod, aoe, aor, aod, fyos, fas)
+  select(worker, cyob, cyoe, cyor, cyod, aoe, aor, aod, fyos, fas)
 workers
 
 ```
@@ -3056,7 +3123,7 @@ paramvars <- setdiff(names(params), xvars)
 data <- 
   full_join(workers, params,
             by = character()) %>%  # cartesian product
-  nest(wdata=c(yob:fas)) %>%  # worker data
+  nest(wdata=c(cyob:fas)) %>%  # worker data
   nest(params=all_of(paramvars)) %>%  # retirement plan parameters
   mutate(id=row_number()) %>%
   select(id, worker, stabbr, tier, tname, db_covered, ss_covered, dc_covered, everything())
@@ -3079,10 +3146,20 @@ source(here::here("r", "ONETIME_get_and_save_cpi.r"))
 
 ```
 
+```{r}
+# source functions ----
+source(here::here("r", "functions_retirement_basic.r"))
+source(here::here("r", "functions_socsec.r"))
+source(here::here("r", "functions_DBplans.r"))
+source(here::here("r", "functions_DCplans.r"))
+```
+
 ```{r cpi}
+cpifc <- get_cpifc()
+
 # inflation constants
-realwage_pch <-  0.009007175  # average real growth in wage index, 1950-ish to 2020
-cpi_pch <- .02
+realwage_pch <-  0.009007175  # average real growth in Soc Sec wage index, 1950-ish to 2020
+cpi_pch <- .02  # forecasted inflation rate
 nomwage_pch <- realwage_pch + cpi_pch
 
 # Social Security parameters
@@ -3090,24 +3167,28 @@ ss_eecrate <- .062
 ```
 
 ```{r}
-# source functions ----
-source(here::here("r", "functions_socsec.r"))
-source(here::here("r", "functions_DBplans.r"))
-source(here::here("r", "functions_DCplans.r"))
-```
-
-```{r}
 # checks ----
 data %>% unnest(cols=params)
 
 check <- data %>%
-  # filter(stabbr != "MA") %>%
+  rowwise() %>%
+  mutate(base=list(fbase(wdata)),
+         socsec=list(fsocsec(ss_covered, wdata, base, params, cpifc))) %>%
+  ungroup()
+
+check %>%
+  filter(row_number()==5) %>%
+  # unnest(cols=socsec)
+  unnest(cols=c(base, socsec))
+
+check <- data %>%
   rowwise() %>%
   # build a series of list-columns each of which has a dataframe from age of entry to age of death
   mutate(base=list(fbase(wdata)),
-         socsec=list(fsocsec(ss_covered, wdata, base, params)),
+         socsec=list(fsocsec(ss_covered, wdata, base, params, cpifc)),
          pension=list(pension(db_covered, stabbr, tier, wdata, base, params))) %>%
-  unnest(cols=c(base, socsec))
+  ungroup %>%
+  unnest(cols=c(base, pension))
 
 check <- data %>%
   # filter(stabbr != "MA") %>%
@@ -3125,11 +3206,13 @@ retinc <- data %>%
   rowwise() %>%
   # build a series of list-columns each of which has a dataframe from age of entry to age of death
   mutate(base=list(fbase(wdata)),
-         socsec=list(fsocsec(ss_covered, wdata, base, params)),
+         socsec=list(fsocsec(ss_covered, wdata, base, params, cpifc)),
          pension=list(pension(db_covered, stabbr, tier, wdata, base, params)),
-         dcvalues=list(dcvalues(dc_covered, wdata, base, params)))
+         dcvalues=list(dcvalues(dc_covered, wdata, base, params))) %>%
+  ungroup
 # retinc
 # glimpse(retinc)
+# tmp <- retinc %>% unnest(cols=c(base, dcvalues)) %>% filter(worker==3)
 ```
 
 ## Summarize results
@@ -3162,51 +3245,63 @@ retinc_pv <- retinc %>%
   arrange(age) %>%
   mutate(across(.cols=c(db_eec, db_pension,
                         sstax, ssbenefit,
-                        dc_eec, dc_annuity),
+                        dc_eec, dc_annuity, dc_assets_atretire),
                 list(pv=~pvyear0(.x, dr, year, year0)))) %>%
   ungroup %>%
   arrange(stabbr, tier, tname, worker) 
+
+retinc_pv
 glimpse(retinc_pv)
 summary(retinc_pv) # make sure there are no NA values
 ns(retinc_pv)
 
 # tmp <- retinc_pv %>%
 #   filter(db_pctfas != db_pctfas_uncapped)
+# figure out when person retired!!! djb
 
 results <- retinc_pv %>%
   group_by(worker, stabbr, tier, tname) %>%
   summarise(fyos=first(fyos),
+            cyoe=first(cyoe),
+            cyor=first(cyor),
             aoe=first(aoe),
             aor=first(aor),
             aod=first(aod),
             db_pctfas=first(db_pctfas),
             db_eec_pv=sum(db_eec_pv),
+            db_ipension=first(db_ipension),
             db_pension_pv=sum(db_pension_pv),
             sstax_pv=sum(sstax_pv),
             ssbenefit_pv=sum(ssbenefit_pv),
             dc_eec_pv=sum(dc_eec_pv),
             dc_annuity_pv=sum(dc_annuity_pv),
+            dc_assets_atretire_pv=sum(dc_assets_atretire_pv), 
             .groups="drop") %>%
   mutate(net_penpv=db_pension_pv - db_eec_pv,
          net_sspv=ssbenefit_pv - sstax_pv,
-         net_dcpv=dc_annuity_pv - dc_eec_pv,
+         net_dcpv_alt=dc_annuity_pv - dc_eec_pv,
+         net_dcpv=dc_assets_atretire_pv - dc_eec_pv,
          net_dbdcpv=net_penpv + net_dcpv,
          net_retpv=net_penpv + net_sspv + net_dcpv) %>%
   arrange(worker, stabbr, tier) 
+
 ```
 
 
 ## Examine results
 ```{r}
+# retinc_pv has year by year details for each worker and all data and assumptions, so we can write it
+# to an excel file for examination
+
+# results has summary results (pvs) - use it to decide who to look at in detail
+
 results %>%
   select(worker, stabbr, tier, tname, aoe, aor, aod, contains("net")) %>%
   arrange(desc(net_retpv))
 
-# TX has negative!!
 results %>%
-  filter(stabbr=="TX", worker==1, tier=="newhire") %>%
-  pivot_longer(-c(worker, stabbr, tier, tname))
-# db_pctfas          -0.411
+  select(worker, stabbr, tier, tname, aoe, aor, aod, cyor, db_ipension, contains("net")) %>%
+  arrange(worker, desc(net_retpv))
 
 # all retirement income, including SS
 results %>%
@@ -3222,42 +3317,227 @@ results %>%
 
 
 ## check results for individual workers or groups --------------------------
+
+```{r makewb}
+make_wb <- function(df, fnbase, comma_cols, pct_cols){
+  wb <- createWorkbook()
+  xlrows <- 2:(nrow(df) + 1)
+  sname <- "sheet1"
+  addWorksheet(wb, sname)
+  writeData(wb, sheet=sname, x=df)
+  
+  # styles
+  hrow <- createStyle(textDecoration = "bold", wrapText = TRUE) # header row
+  num0 <- createStyle(numFmt = "#,##0")
+  num1 <- createStyle(numFmt = "#,##0.0")
+  curr2 <- createStyle(numFmt = "$0.00")
+  pct1 <- createStyle(numFmt = "0.0%")
+  pct2 <- createStyle(numFmt = "0.00%")
+
+  icomma_cols <- match(comma_cols, names(df)) # indexes for the comma formatting
+  ipct_cols <- match(pct_cols, names(df))
+
+  # apply styles
+  addStyle(wb, sheet = sname, style = hrow, rows=1, cols = 1:ncol(df), gridExpand = TRUE)
+  addStyle(wb, sheet = sname, style = num0, rows=xlrows, cols = icomma_cols, gridExpand = TRUE)
+  addStyle(wb, sheet = sname, style = pct2, rows=xlrows, cols = ipct_cols, gridExpand = TRUE)
+  
+  freezePane(wb, sname, firstActiveRow = 2, firstActiveCol = 8)
+  saveWorkbook(wb, file = here::here("checks", paste0(fnbase, ".xlsx")), overwrite = TRUE)
+}
+
+```
+
+
 ```{r}
-# check results for individual workers or groups --------------------------
+
+# check results for individual workers or groups, export from retinc_pv --------------------------
+w11 <- list(worker=1, stabbr="OR", tname="default")
+w3dc <- list(worker=3, stabbr="US", tname="dc665")
+w3pepra <- list(worker=3, stabbr="CA", tname="pepra")
+
+# wcheck <- w3dc; fname <- "w3dc"
+wcheck <- w3pepra; fname <- "w3pepra"
+wfilter <- expression(worker==wcheck$worker & stabbr==wcheck$stabbr & tname==wcheck$tname)
 check <- retinc_pv %>%
-  filter(worker==1, stabbr=="CA", tier=="major", tname=="poffa") %>%
-  unnest(cols=params)
+  filter(eval(wfilter))
+results %>%
+  filter(eval(wfilter))
 # why does net pv at age 50 fall for those who retire later? I get it for the DB plans
 # but why the dc plans?
-  
-check <- retinc %>%
-  # filter(worker==1, stabbr=="CA", tier=="major", tname=="poffa") %>%
-  filter(stabbr=="TX", worker==1, tier=="newhire") %>%
-  unnest(cols = c(params, wdata, base, pension))
+ns(check)
 
-wb <- createWorkbook()
-xlrows <- 2:(nrow(check) + 1)
-sname <- "sheet1"
-addWorksheet(wb, sname)
-writeData(wb, sheet=sname, x=check)
+# check %>%
+#   write.xlsx(here::here("checks", "check.xlsx"))
 
-num0 <- createStyle(numFmt = "#,##0")
-num1 <- createStyle(numFmt = "#,##0.0")
-curr2 <- createStyle(numFmt = "$0.00")
-pct1 <- createStyle(numFmt = "0.0%")
-pct2 <- createStyle(numFmt = "0.00%")
+# define the order of variables
+vars <- quos(id, worker, stabbr, tier, tname, year, age,
+             wage,
+             db_eec, db_eec_pv,
+             db_pension, db_pension_pv, 
+             sstax, sstax_pv,
+             ssbenefit, ssbenefit_pv,
+             dc_eec, dc_eec_pv, dc_erc, dc_annuity, dc_annuity_pv, dc_assets_eoy,
+             dc_assets_atretire, dc_assets_atretire_pv,
+             db_benfactor_normal, fas, fyos, aoe, aor, aod, cyob)
+# put them into groups for formatting
+comma_cols <- quos(wage, db_eec, db_eec_pv,
+             db_pension, db_pension_pv, 
+             sstax, sstax_pv,
+             ssbenefit, ssbenefit_pv, fas,
+             dc_eec, dc_eec_pv, dc_erc, dc_annuity, dc_annuity_pv, dc_assets_eoy,
+             dc_assets_atretire, dc_assets_atretire_pv) %>% unquos
+pct_cols <- quos(db_benfactor_normal) %>% unquos
 
-comma_cols <- c("fas", "wage", "db_eec_base1", "db_eec", "db_pension2", "db_pension_colagrown", "db_pension_base", "db_pension")
-icomma_cols <- match(comma_cols, names(check))
-pct_cols <- c("db_benfactor_min", "db_benfactor_normal", "db_max_benpct", "db_cola_rate", "db_eec_rate1", "db_eec_rate2", "db_benfactor", "db_pctfas_uncapped", "db_pctfas")
-ipct_cols <- match(pct_cols, names(check))
+df <- check %>% 
+  select(!!!vars)
 
-addStyle(wb, sheet = sname, style = num0, rows=xlrows, cols = icomma_cols, gridExpand = TRUE)
-addStyle(wb, sheet = sname, style = pct2, rows=xlrows, cols = ipct_cols, gridExpand = TRUE)
-saveWorkbook(wb, file = here::here("checks", "check.xlsx"), overwrite = TRUE)
+make_wb(df, fname, comma_cols, pct_cols)
 
-check %>%
-  write.xlsx(here::here("checks", "check.xlsx"))
+results %>%
+  filter(eval(wfilter)) %>%
+  pivot_longer(-c(worker, stabbr, tier, tname))
+
+```
+
+```{r tab_pensions_npv}
+results %>%
+  select(worker, stabbr, tier, tname, aoe, aor, aod, cyor, db_ipension, contains("net")) %>%
+  arrange(worker, desc(net_retpv))
+
+plans <- read_delim(
+"stabbr; tname; plan
+CA; poffa; California correctional officer (PO/FF A - hired prior to January 15, 2011)
+CA; poffb; California correctional officer (PO/FF B - on or after January 15, 2011 and prior to January 1, 2013)
+CA; pepra; California correctional officer new hire (PEPRA PO/FF - on or after January 1, 2013)
+OR; default; Oregon correctional officer new hire
+MA; default; Massachusetts correctional officer new hire
+US; dc665; Private defined contribution (6% employer contribution, 6% employee contribution)
+TX; default; Texas correctional officer new hire
+", delim=";", trim_ws=TRUE
+)
+plans
+
+tabdata <- results %>%
+  filter(worker==3, # retires at age 57
+         (tier!="private") | (tname=="dc665")) %>%  
+  # CAUTION: dc_ror for public is always 5%
+  left_join(plans, by=c("stabbr", "tname")) %>%
+  select(worker, stabbr, tier, tname, plan, aoe, aor, aod, cyor, db_ipension, 
+         net_penpv, net_sspv, net_dcpv, net_retpv) %>%
+  arrange(worker, desc(net_retpv))
+
+tabdata
+
+tab <- tabdata %>%
+  select(plan, db_ipension, 
+         net_penpv, net_sspv, net_dcpv, net_retpv) %>%
+  gt() %>%
+  tab_header(
+    title = "Present value of retirement income for an illustrative worker",
+    subtitle = "Employee works ages 25 through 56, retires at 57, and lives until age 85. Final salary is $98,000 (approximate top of grade)."
+      ) %>%
+  tab_spanner(html("Present value at retirement (2021 $)<br>net of associated employee contributions"),
+              columns=c(net_penpv, net_sspv, net_dcpv, net_retpv)) %>%
+  cols_label(plan=html("Worker"),
+             db_ipension=html("Pension annuity<br>in first year<br>of retirement"),
+             net_penpv=html("Pension benefit"),
+             net_sspv=html("Social<br>Security<br>benefit"),
+             net_dcpv=html("Employer-supported<br>DC plan<br>(5% return)"),
+             net_retpv=html("Total")
+             ) %>%
+  cols_align(align="left", columns = plan) %>%
+  fmt_number(
+    columns=c(db_ipension, net_penpv, net_sspv, net_dcpv, net_retpv),
+    rows=1,
+    pattern="${x}",
+    decimals=0
+  ) %>%
+  fmt_number(
+    columns=c(db_ipension, net_penpv, net_sspv, net_dcpv, net_retpv),
+    rows=2:nrow(tabdata),
+    pattern="{x}",
+    decimals=0
+  ) %>%
+  # fmt_missing(columns = everything(), missing_text = "--") %>%
+  cols_width(
+    plan ~ px(400),
+    everything() ~ px(110)
+    ) %>%
+  tab_options(
+    table.width = pct(100)
+  ) %>%
+  tab_footnote(
+    footnote = "Assets at retirement less present value of employee contributions.",
+    locations = cells_column_labels(columns = net_dcpv)
+  )
+
+tab
+# webshot options
+# default zoom=2, expand=5
+gtsave(tab, filename="tab_pensions_npv.png", path=here::here("results"), zoom=1.5, expand=5)
+write_csv(tabdata, here::here("results", "tab_pensions_npv_data.csv"))
+
+```
+
+```{r fig_pensions_npv_bar}
+
+plans <- read_delim(
+"stabbr; tname; plan
+CA; poffa; California correctional officer (PO/FF A)
+CA; poffb; California correctional officer (PO/FF B)
+CA; pepra; California correctional officer new hire (PEPRA PO/FF)
+OR; default; Oregon correctional officer new hire
+MA; default; Massachusetts correctional officer new hire
+US; dc665; Private defined contribution (6%--6% employer--employee contribution)
+TX; default; Texas correctional officer new hire
+", delim=";", trim_ws=TRUE
+)
+plans
+
+pdata <- results %>%
+  filter(worker==3, # retires at age 57
+         (tier!="private") | (tname=="dc665")) %>%  
+  # CAUTION: dc_ror for public is always 5%
+  left_join(plans, by=c("stabbr", "tname")) %>%
+  select(worker, stabbr, tier, tname, plan, net_retpv) %>%
+  arrange(worker, desc(net_retpv))
+  # mutate(label=percent(casco_fepremium, accuracy=.1))
+
+gtitle <- "Present value of retirement income for an illustrative worker"
+gsubtitle <- "Employee works ages 25 through 56, retires at 57, and lives until age 85. Final salary is $98,000 (approximate top of grade)"
+
+# capt1 <- paste0("\nSource: ", source_acs, ".")
+# capt2 <- paste0("Price adjustments using ", source_rpp, ".")
+# capt <- paste0(capt1, "\n", capt2)
+
+pensions_npv <- pdata %>%
+  select(plan, net_retpv) %>%
+  ggplot(aes(x=reorder(str_wrap(plan, 25), desc(net_retpv)), y=net_retpv)) +
+  geom_col(fill="blue",  size=1, width=0.5) +
+  # geom_text(aes(label=label),
+  #           hjust=0.5, nudge_y=.01, size=3.5) +
+  scale_y_continuous(breaks=seq(0, 3e6, 500e3), 
+                     labels=label_comma(prefix = "$", accuracy = 1,
+                     scale=1/1000)) +
+  theme_bw() +
+  labs(y="thousands of 2021 $", x=NULL,
+       caption=capt) +
+  ggtitle(label=gtitle, subtitle = gsubtitle) +
+  theme(axis.text = element_text(size=12),
+        axis.text.x = element_text(hjust = 0.5),
+        axis.title = element_text(size=16),
+        plot.title = element_text(size=20)) +
+  # scale_x_continuous(breaks=seq(-1, 1, .05), labels=label_percent(accuracy=1)) +
+  legend_none +
+  caption_left
+
+pensions_npv
+
+ggsave(here::here("results", "fig_pensions_npv_bar.png"), 
+       plot=pensions_npv, width=12, height=8, scale=1.3)
+write_csv(pdata, here::here("results", "fig_pensions_npv_bar_data.csv"))
+
 
 ```
 
@@ -3265,13 +3545,12 @@ check %>%
 
 # Employee health benefits
 
-
 ```{r}
 # gcc benefits ----
 # REMEMBER - these are full time and part time so averages are understated
 casco_gcc %>%
   group_by(position) %>%
-  summarise(qtiledf(.data$health))
+  summarise(qtiledf(health))
 
 casco_gcc %>%
   group_by(position) %>%
@@ -3285,41 +3564,39 @@ casco_gcc %>%
             health_mean=mean(health),
             health=sum(health),
             regpay=sum(regpay))
-
-
-
-coeh2 <- coeh %>%
-  mutate(hlthpct=healthdentalvision / totalwages)
-quantile(coeh2$hlthpct, na.rm=TRUE)  
-
-coeh2 %>%
-  group_by(position) %>%
-  summarise(qtiledf(.data$hlthpct))
-
-coeh2 %>%
-  group_by(position) %>%
-  summarise(n=n(),
-            wages=sum(totalwages), 
-            hdv=sum(healthdentalvision),
-            across(c(regularpay, overtimepay, lumpsumpay, otherpay, totalwages, healthdentalvision), mean),
-            .groups = "drop") %>%
-  mutate(pct=hdv / wages,
-         pctreg=healthdentalvision / regularpay,
-         totvreg=totalwages / regularpay)
-
-coeh2 %>%
-  filter(hlthpct < 1, hlthpct > 0) %>%
-  filter(totalwages >= 10e3, hlthpct > .1) %>%
-  ggplot(aes(totalwages, hlthpct)) +
-  geom_point() +
-  scale_x_log10() +
-  scale_y_log10()
+# 
+# coeh2 <- coeh %>%
+#   mutate(hlthpct=healthdentalvision / totalwages)
+# quantile(coeh2$hlthpct, na.rm=TRUE)  
+# 
+# coeh2 %>%
+#   group_by(position) %>%
+#   summarise(qtiledf(.data$hlthpct))
+# 
+# coeh2 %>%
+#   group_by(position) %>%
+#   summarise(n=n(),
+#             wages=sum(totalwages), 
+#             hdv=sum(healthdentalvision),
+#             across(c(regularpay, overtimepay, lumpsumpay, otherpay, totalwages, healthdentalvision), mean),
+#             .groups = "drop") %>%
+#   mutate(pct=hdv / wages,
+#          pctreg=healthdentalvision / regularpay,
+#          totvreg=totalwages / regularpay)
+# 
+# coeh2 %>%
+#   filter(hlthpct < 1, hlthpct > 0) %>%
+#   filter(totalwages >= 10e3, hlthpct > .1) %>%
+#   ggplot(aes(totalwages, hlthpct)) +
+#   geom_point() +
+#   scale_x_log10() +
+#   scale_y_log10()
 
 ```
 
 
 # Compare wage data from different data sources
-```{r}
+```{r tab_wagedata_compare}
 taboes <- oesres_clean %>%
   filter(year==2020, stabbr=="CA", level=="state") %>%
   mutate(src="oes", n=nrow(.)) %>%
@@ -3383,8 +3660,8 @@ tab <- tabdata %>%
 tab
 # webshot options
 # default zoom=2, expand=5
-gtsave(tab, filename="tab_data_compare.png", path=here::here("results"), zoom=1.5, expand=10)
-
+gtsave(tab, filename="tab_wagedata_compare.png", path=here::here("results"), zoom=1.5, expand=10)
+write_csv(tabdata, here::here("results", "tab_wagedata_compare_data.csv"))
 ```
 
 

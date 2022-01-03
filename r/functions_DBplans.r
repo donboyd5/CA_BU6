@@ -1,3 +1,10 @@
+# nomenclature:
+#   "yo" variables are "year of" variables relative to zero, answering "how many" -- for example:
+#      yos - year of service
+#      yor - year of retirement
+#   "cy" variables are calendar year variables
+#      cyob - calendar year of birth
+#      cyor - calendar year of retirement
 
 pension <- function(db_covered, stabbr, tier, w, b, p){
   # w: worker data
@@ -56,9 +63,9 @@ pension <- function(db_covered, stabbr, tier, w, b, p){
            db_benfactor=p$db_benfactor_normal - early_penalty,
            db_pctfas_uncapped=db_benfactor * w$fyos,
            db_pctfas=pmin(db_pctfas_uncapped, p$db_max_benpct),
-           ipension=w$fas * db_pctfas, # initial pension
-           cola(ipension, age, aor=w$aor, cola_ceil1=p$db_cola_ceiling1, cola_rate1=p$db_cola_rate1, compound=p$db_cola_compound) # returns a data frame
+           db_ipension=w$fas * db_pctfas, # initial pension
+           cola(db_ipension, age, aor=w$aor, cola_ceil1=p$db_cola_ceiling1, cola_rate1=p$db_cola_rate1, compound=p$db_cola_compound) # returns a data frame
     ) %>%
-    select(-names(b), -ipension)
+    select(-names(b))
   results
 }

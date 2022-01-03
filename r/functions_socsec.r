@@ -1,121 +1,71 @@
 
-#.. Social Security normal retirement age ----
-# https://www.ssa.gov/oact/ProgData/nra.html
-# Normal Retirement Age
-# Year of birth	Age
-# 1937 and prior	65
-# 1938	65 and 2 months
-# 1939	65 and 4 months
-# 1940	65 and 6 months
-# 1941	65 and 8 months
-# 1942	65 and 10 months
-# 1943-54	66
-# 1955	66 and 2 months
-# 1956	66 and 4 months
-# 1957	66 and 6 months
-# 1958	66 and 8 months
-# 1959	66 and 10 months
-# 1960 and later	67
-
-ss_nra <- tibble(yob=1930:2030) %>%
-  mutate(nra = case_when(yob <= 1937 ~ 65,
-                         yob %in% 1938:1942 ~ 65 + 2/12 * (yob - 1937),
-                         yob %in% 1943:1954 ~ 66,
-                         yob %in% 1955:1959 ~ 66 + 2/12 * (yob - 1954),
-                         yob >= 1960 ~ 67,
-                         TRUE ~ -Inf))
-ss_nra
-
-#.. get previously saved cpi historical data and construct forecast ----
-# note:
-#   I do not use the 5.9% for 2021 estimated by ssa
-#   I really should use cpi-w for Soc Sec but keep this for now
-cpi <- readRDS(here::here("data", "cpi.rds"))
-cpifc <- cpi %>%
-  select(year, cpi) %>%
-  bind_rows(tibble(year=2021:2200)) %>%
-  mutate(cpi=ifelse(year > 2020,
-                    cpi[year==2020] * (1 + cpi_pch)^(year - 2020),
-                    cpi),
-         cpi_pch=cpi / cpi[match(year - 1, year)] - 1)
-cpifc
-
-
-#.. Social Security benefit parameters ----
-
-#.. SS wage-related parameters ----
-#.... SS average wage index series and awi ----
-awi1 <- read_excel(static, sheet="awiseries", range="A2:B72")
-awi <- awi1 %>%
-  mutate(awi=awiseries[year==max(year)] / awiseries,
-         awipch=awiseries / awiseries[match(year - 1, year)] - 1)
-awi
-
-# compute a forecasted wage index series
-awifc <- awi %>%
-  select(year, awiseries) %>%
-  bind_rows(tibble(year=2021:2200)) %>%
-  mutate(awiseries=ifelse(year > 2020,
-                          awiseries[year==2020] * (1 + realwage_pch + cpi_pch)^(year - 2020),
-                          awiseries),
-         awi=awiseries[year==2020] / awiseries,
-         awi_pch=awiseries / awiseries[match(year - 1, year)] - 1)
-awifc
-
-
-#.. SS bends for the Social Security formula ----
-bends1 <- read_excel(static, sheet="bends", range="A4:C48")
-bends1
-
-# create a forecasted series
-bendsfc <- bends1 %>%
-  bind_rows(tibble(year=2023:2200)) %>%
-  mutate(across(c(bend1, bend2), 
-                function(x) ifelse(year > 2022,
-                                   x[year==2022] * (1 + nomwage_pch)^(year - 2022),
-                                   x)))
-bendsfc
-
-
-# functions ---------------------------------------------------------------
-#.. utility functions ----
-gaip <- function(p, i, n, g, end = FALSE){
-  # graduated annuity (growing at rate g) initial payment
-  # p=principal, i=interest rate, n=periods, g=growth rate in payments
-  # calculating gaip directly
-  # end: , if TRUE, payment at the end of period. 
-  # examples:
-  # gaip(100, 0.08, 10, 0.04)
-  # gaip(100, 0.08, 10, 0.02, end = TRUE)
-  if(end) p <- p*(1 + i) 
-  k <- (1 + g)/(1 + i)
-  a_sn <- (1 - k^n )/(1 - k)
-  pmt <- p/a_sn  # the initial payment in the graduated annuity
-  return(pmt)
+get_ss_nra <- function(){
+  #.. Social Security normal retirement age ----
+  # https://www.ssa.gov/oact/ProgData/nra.html
+  # Normal Retirement Age
+  # Year of birth	Age
+  # 1937 and prior	65
+  # 1938	65 and 2 months
+  # 1939	65 and 4 months
+  # 1940	65 and 6 months
+  # 1941	65 and 8 months
+  # 1942	65 and 10 months
+  # 1943-54	66
+  # 1955	66 and 2 months
+  # 1956	66 and 4 months
+  # 1957	66 and 6 months
+  # 1958	66 and 8 months
+  # 1959	66 and 10 months
+  # 1960 and later	67
+  
+  ss_nra <- tibble(cyob=1930:2030) %>%
+    mutate(nra = case_when(cyob <= 1937 ~ 65,
+                           cyob %in% 1938:1942 ~ 65 + 2/12 * (cyob - 1937),
+                           cyob %in% 1943:1954 ~ 66,
+                           cyob %in% 1955:1959 ~ 66 + 2/12 * (cyob - 1954),
+                           cyob >= 1960 ~ 67,
+                           TRUE ~ -Inf))
+  ss_nra
 }
 
 
-#.. base data functions ----
-fbase <- function(w){
-  # w is wdata, data for a single worker -- one row
-  # build the base data for each year from aoe (age of entry) to aod (age of death)
-  base <- tibble(age=w$aoe:w$aod) %>%
-    mutate(year=w$yoe + row_number() - 1,
-           yos=ifelse(age < w$aor, age - w$aoe + 1, 0),  # actual years of service, 0 in retirement
-           yor=ifelse(age >= w$aor, age - w$aor + 1, 0),
-           # FOR NOW: backcast wages from fas -- improve this when practical
-           wage=ifelse(age < w$aor, 
-                       w$fas / ((1 + nomwage_pch)^(w$fyos - yos)),
-                       0)) %>%
-    select(year, age, yos, yor, wage)
-  base
+get_awifc <- function(){
+  #.... SS average wage index series and awi including forecast (i.e., awifc) ----
+  awi1 <- read_excel(static, sheet="awiseries", range="A2:B72")
+  awi <- awi1 %>%
+    mutate(awi=awiseries[year==max(year)] / awiseries,
+           awipch=awiseries / awiseries[match(year - 1, year)] - 1)
+  
+  # compute a forecasted wage index series
+  awifc <- awi %>%
+    select(year, awiseries) %>%
+    bind_rows(tibble(year=2021:2200)) %>%
+    mutate(awiseries=ifelse(year > 2020,
+                            awiseries[year==2020] * (1 + realwage_pch + cpi_pch)^(year - 2020),
+                            awiseries),
+           awi=awiseries[year==2020] / awiseries,
+           awi_pch=awiseries / awiseries[match(year - 1, year)] - 1)
+  awifc
 }
 
 
-#.. Social Security functions ----
+get_bendsfc <- function(){
+  #.. SS bends for the Social Security formula ----
+  bends1 <- read_excel(static, sheet="bends", range="A4:C48")
+  
+  # create a forecasted series
+  bendsfc <- bends1 %>%
+    bind_rows(tibble(year=2023:2200)) %>%
+    mutate(across(c(bend1, bend2), 
+                  function(x) ifelse(year > 2022,
+                                     x[year==2022] * (1 + nomwage_pch)^(year - 2022),
+                                     x)))
+  bendsfc
+}
 
-fiwage <- function(yob, year, wage){
-  # indexed (real) wage for each year
+
+fiwage <- function(cyob, year, wage){
+  # indexed (real) wage for each year ----
   # based on iwage factors, assumed to be the same for every year
   
   # inputs:
@@ -138,15 +88,15 @@ fiwage <- function(yob, year, wage){
   # we want to construct a wage index that is 1 for age 60 and later, indexed to age 60 in earlier years
   iwagedf <- tibble(year, wage) %>%
     left_join(awifc %>% select(year, awiseries, awi), by="year") %>%
-    mutate(idx=awiseries[year==(yob + 60)] / awiseries,
-           idx=ifelse(year > (yob + 60), 1, idx),
+    mutate(idx=awiseries[year==(cyob + 60)] / awiseries,
+           idx=ifelse(year > (cyob + 60), 1, idx),
            iwage=wage * idx)
   iwagedf$iwage
 }
 
 
 faime <- function(iwage){
-  # aime -- average indexed monthly earnings
+  # aime -- average indexed monthly earnings ----
   
   # iwage -- vector of indexed wages
   
@@ -170,8 +120,9 @@ faime <- function(iwage){
 }
 
 
-fpia <- function(aime, yofe, yossnra){
-  # The "primary insurance amount" (PIA) is the benefit (before rounding down to
+fpia <- function(aime, cyofe, cyossnra){
+  # The "primary insurance amount" (PIA) ----
+  # pia is the benefit (before rounding down to
   # next lower whole dollar) a person would receive if he/she elects to begin
   # receiving retirement benefits at his/her normal retirement age. At this age,
   # the benefit is neither reduced for early retirement nor increased for
@@ -179,21 +130,21 @@ fpia <- function(aime, yofe, yossnra){
   
   # STEPS:
   # - get wages through yor - 1, (https://www.ssa.gov/oact/ProgData/retirebenefit1.html)
-  #     I assume SS yor is yossnra -- year of SS normal retirement age
-  # - calc wages indexed to yoage 60 (yofe - 2), index=1 afterward (same), using nominal wage
+  #     I assume SS yor is cyossnra -- year of SS normal retirement age
+  # - calc wages indexed to yoage 60 (cyofe - 2), index=1 afterward (same), using nominal wage
   #     index values (https://www.ssa.gov/oact/COLA/AWI.html and https://www.ssa.gov/oact/COLA/awidevelop.html)
   # - calc aime based on highest (up to) 35 years (again https://www.ssa.gov/oact/ProgData/retirebenefit1.html)
   # - apply pia formula using bend points for age=62 (https://www.ssa.gov/oact/ProgData/retirebenefit2.html)
   #     bend points: (https://www.ssa.gov/oact/COLA/bendpoints.html)
   # - index this tentative pia from year of first eligibility, (yoage62) to yo SS retirement, which
-  #     I assume to be yossnra for everyone (all retire for SS purposes at SS nra)
+  #     I assume to be cyossnra for everyone (all retire for SS purposes at SS nra)
   #     using cpiw cola (same - https://www.ssa.gov/oact/ProgData/retirebenefit2.html)
   # - the result is pia, the initial benefit person would get if retires at ssnra
   # - (initial benefit could be adjusted up or down for early or late retirement, but I assume claim SS at nra)
   # - benefits in later years adjusted by cpiw cola
   
   # aime - average indexed monthly earnings using data through yor - 1, indexed to age 60 (index=1 after 60)
-  # yofe - year of first eligibility -- yo age 62
+  # cyofe - year of first eligibility -- cyo age 62
   
   # pia -- primary insurance amount
   
@@ -225,8 +176,8 @@ fpia <- function(aime, yofe, yossnra){
   # the one effective for December 2022.
   
   # bends <- c(NA_real_, NA_real_)
-  bends <- c(bendsfc$bend1[bendsfc$year==yofe],
-             bendsfc$bend2[bendsfc$year==yofe])
+  bends <- c(bendsfc$bend1[bendsfc$year==cyofe],
+             bendsfc$bend2[bendsfc$year==cyofe])
   
   # djb: the pia rates are fixed at:
   pia_rates <- c(.9, .32, .15)
@@ -249,17 +200,24 @@ fpia <- function(aime, yofe, yossnra){
     pia_rates[2] * excess2 +
     pia_rates[3] * excess3
   
-  # now add cola, if any, from yofe to normal retirement age - 1
-  cpi_yofe_minus1 <- cpifc$cpi[cpifc$year==(yofe - 1)]  # I think this is right, but triple check
-  cpi_nra_minus1 <- cpifc$cpi[cpifc$year==(round(yossnra) - 1)]
+  # now add cola, if any, from cyofe to normal retirement age - 1
+  cpi_cyofe_minus1 <- cpifc$cpi[cpifc$year==(cyofe - 1)]  # I think this is right, but triple check
+  cpi_nra_minus1 <- cpifc$cpi[cpifc$year==(round(cyossnra) - 1)]
   # note that I don't use the 5.9% cola for 2021, I use 2% (for convenience)
   
-  pia <- pia_preCOLA * cpi_nra_minus1 / cpi_yofe_minus1
+  pia <- pia_preCOLA * cpi_nra_minus1 / cpi_cyofe_minus1
   pia
 }
 
 
-fsocsec <- function(ss_covered, w, b, p){
+# ONETIME SETUP of data and parameters for Social Security ----
+ss_nra <- get_ss_nra()
+awifc <- get_awifc()
+bendsfc <- get_bendsfc()
+# END ONETIME SETUP ----
+
+fsocsec <- function(ss_covered, w, b, p, cpifc){
+  # main Social Security function ----
   # w: worker data (non-time-varying)
   # b: base data for the worker, per year
   # p: params for retirement benefit calculations
@@ -276,16 +234,16 @@ fsocsec <- function(ss_covered, w, b, p){
     mutate(sstax=ifelse(yos > 0,
                         wage * ss_eecrate,
                         wage * 0)) %>%
-    mutate(iwage=fiwage(w$yob, year, wage))  # indexed wage
+    mutate(iwage=fiwage(w$cyob, year, wage))  # indexed wage
   
   aime <- faime(socsec$iwage)  # average indexed monthly earnings, scalar
   
-  yofe <- 62 - w$aoe + w$yoe # year of first eligibility -- year a person attains age 62
-  # ss_nra is df with yob, nra
-  ssnra <- ss_nra$nra[ss_nra$yob==w$yob]
-  yossnra <- w$yob + ssnra # I assume everyone claims SS at ss normal retirement age, NOT at govt retirement
+  cyofe <- 62 - w$aoe + w$cyoe # year of first eligibility -- year a person attains age 62
+  # ss_nra is df with cyob, nra
+  ssnra <- ss_nra$nra[ss_nra$cyob==w$cyob]
+  cyossnra <- w$cyob + ssnra # I assume everyone claims SS at ss normal retirement age, NOT at govt retirement
   
-  pia <- fpia(aime, yofe, yossnra) # primary insurance amount, scalar
+  pia <- fpia(aime, cyofe, cyossnra) # primary insurance amount, scalar
   
   socsec <- socsec %>%
     left_join(cpifc %>% select(year, cpi),
@@ -294,7 +252,7 @@ fsocsec <- function(ss_covered, w, b, p){
            # determine annual benefits, with cola if relevant (now, ALWAYS -- djb)
            ssbenefit=ifelse(age < round(ssnra),
                             0,
-                            pia * 12 * cpi / cpi[year==round(yossnra)])) %>%
+                            pia * 12 * cpi / cpi[year==round(cyossnra)])) %>%
     select(-names(b), -cpi)  # don't duplicate names
   
   socsec
