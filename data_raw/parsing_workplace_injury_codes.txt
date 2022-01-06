@@ -1,0 +1,37 @@
+https://www.bls.gov/help/hlpforma.htm#CS
+
+# Example of protective service occupations injury rates, private sector, CSU00X3300003O100, by email from Colin Emberland, BLS
+# CSU00X 330000 3 O 1 00
+#        CSU00X prefix CS, SA code is U, category code 00X is all industry -- this is what I want for all
+#        330000 Occupation = Protective Service Occupations
+#        3 Data Type = Injury and illness rate per 10,000 full-time workers
+#        1 Ownership = Private Industry (skip the O -- oh, not zero)
+#        00 Area = All US
+# here is correctioonal officers, from the spreadsheet he sent me
+# CSU00X3330123O100	227.8	345.1	285.3	190.8	345.4	252.4	157.9	145.0	174.8
+
+Nonfatal cases involving days away from work: selected characteristics (2011 forward)
+Survey Overview The following is a sample format description of the Occupational Injuries and Illnesses industry data series identifier:
+	                         1         2
+ 			12345678901234567890
+	Series ID   	CSUSDX031XXX6E000
+	Positions       Value           Field Name
+	1-2             CS              Prefix
+	3               U               Seasonal Adjustment Code
+	4-6             SDX             Category Code
+	7-12            031XXX          Detail Code
+	13              6               Data Type Code
+	14              E               Case Type Code
+	15	        0             	Ownership Code
+	16-17           00              Area Code
+	
+To assist you in formatting series IDs, access any of the following for a list of codes and their corresponding titles:
+
+Category Codes
+Age Codes
+Data Type Code
+Case Type Codes
+Ownership Codes
+Area Codes
+Industry Codes
+Event Codes
